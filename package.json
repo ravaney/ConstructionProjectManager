@@ -1,0 +1,17 @@
+{
+  "name": "dream-home-construction-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w server && npm run build -w client",
+    "lint": "npm run lint -w server && npm run lint -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
