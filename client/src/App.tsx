@@ -26,6 +26,9 @@ type IconName =
   | "workers"
   | "team"
   | "add"
+  | "confirm"
+  | "close"
+  | "edit"
   | "refresh"
   | "logout";
 
@@ -147,6 +150,26 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M5 12h14" />
         </svg>
       );
+    case "confirm":
+      return (
+        <svg {...props}>
+          <path d="m5 12 4 4 10-10" />
+        </svg>
+      );
+    case "close":
+      return (
+        <svg {...props}>
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
+      );
+    case "edit":
+      return (
+        <svg {...props}>
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+      );
     case "refresh":
       return (
         <svg {...props}>
@@ -167,10 +190,28 @@ function NavIcon({ name }: { name: IconName }) {
   }
 }
 
+const budgetCurrencyFormatter = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0
+});
+
+function parseBudgetAmount(value: string): number {
+  const digitsOnly = value.replace(/[^\d]/g, "");
+  return digitsOnly ? Number(digitsOnly) : 0;
+}
+
+function formatBudgetAmount(value: number): string {
+  return budgetCurrencyFormatter.format(Math.max(0, Math.round(value)));
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [project, setProject] = useState<Project | null>(null);
+  const [budgetInput, setBudgetInput] = useState("");
+  const [editingBudget, setEditingBudget] = useState(false);
+  const [savingBudget, setSavingBudget] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -236,6 +277,14 @@ export default function App() {
     });
   }, [refresh]);
 
+  useEffect(() => {
+    if (editingBudget) {
+      return;
+    }
+
+    setBudgetInput(formatBudgetAmount(project?.totalBudget ?? summary?.metrics.totalBudget ?? 0));
+  }, [editingBudget, project?.totalBudget, summary?.metrics.totalBudget]);
+
   async function handleAuthenticated(user: AppUser) {
     setCurrentUser(user);
     setLoading(true);
@@ -248,6 +297,8 @@ export default function App() {
     setCurrentUser(null);
     setSummary(null);
     setProject(null);
+    setBudgetInput("");
+    setEditingBudget(false);
     setExpenses([]);
     setTasks([]);
     setActiveTab("dashboard");
@@ -256,6 +307,38 @@ export default function App() {
   async function handleUpdateBudget(totalBudget: number) {
     await api.updateProject({ totalBudget });
     await refresh();
+  }
+
+  async function handleSaveBudget(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const parsedBudget = parseBudgetAmount(budgetInput);
+
+    if (!isOwner || !Number.isFinite(parsedBudget) || parsedBudget < 1) {
+      return;
+    }
+
+    setSavingBudget(true);
+    setError("");
+
+    try {
+      await handleUpdateBudget(parsedBudget);
+      setEditingBudget(false);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Could not update budget");
+    } finally {
+      setSavingBudget(false);
+    }
+  }
+
+  function startBudgetEdit() {
+    setBudgetInput(formatBudgetAmount(project?.totalBudget ?? summary?.metrics.totalBudget ?? 0));
+    setEditingBudget(true);
+  }
+
+  function cancelBudgetEdit() {
+    setBudgetInput(formatBudgetAmount(project?.totalBudget ?? summary?.metrics.totalBudget ?? 0));
+    setEditingBudget(false);
   }
 
   async function handleAddExpense(payload: ExpenseInput) {
@@ -320,6 +403,27 @@ export default function App() {
 
   const budgetTabs = useMemo(() => tabs.filter((tab) => tab.section === "budget"), []);
   const managementTabs = useMemo(() => tabs.filter((tab) => tab.section === "management"), []);
+  const currentMonthLabel = useMemo(() => {
+    const latestMonth = summary?.monthlySpend[summary.monthlySpend.length - 1]?.month;
+    if (latestMonth) {
+      const [year, month] = latestMonth.split("-");
+      return new Date(Number(year), Number(month) - 1, 1).toLocaleDateString(undefined, {
+        month: "short",
+        year: "numeric"
+      });
+    }
+
+    return new Date().toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }, [summary]);
+  const lastUpdatedLabel = useMemo(
+    () =>
+      new Date().toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric"
+      }),
+    []
+  );
   const isOwner = currentUser?.role === "OWNER";
 
   if (!authReady || (loading && !currentUser)) {
@@ -335,178 +439,226 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <div className="layout-grid">
-        <aside className="sidebar">
-          <div className="sidebar-brand sidebar-card">
-            <p className="eyebrow">Construction OS</p>
-            <h2>{project?.phase ?? "Phase Tracker"}</h2>
-            <p className="muted small-text">
-              {currentUser.name} ({currentUser.role})
-            </p>
+    <div className="app-shell ribbon-shell">
+      <header className="app-ribbon">
+        <div className="ribbon-utility-bar">
+          <div className="ribbon-utility-brand">
+            <span className="ribbon-app-badge">
+              <NavIcon name="budget" />
+            </span>
+            <div>
+              <strong>Construction OS</strong>
+              <span>{project?.name ?? "Dream Home"} workbook</span>
+            </div>
+          </div>
+          <div className="ribbon-utility-actions">
+            <button className="ribbon-icon-btn" type="button" onClick={() => refresh()}>
+              <NavIcon name="refresh" />
+            </button>
+            <button className="ribbon-account-btn" type="button" onClick={handleLogout}>
+              <NavIcon name="logout" />
+              <span>Logout</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="ribbon-tab-row">
+          <div className="ribbon-brand-pill">
+            <div className="ribbon-brand-logo">{project?.name?.slice(0, 1) ?? "D"}</div>
+            <div>
+              <strong>{project?.name ?? "Dream Home"}</strong>
+              <span>{project?.phase ?? "Phase 1"} · {currentUser.name}</span>
+            </div>
           </div>
 
-          <div className="sidebar-section">
-            <div className="sidebar-section-title">
-              <NavIcon name="budget" />
-              <span>Budget</span>
-            </div>
-            <div className="sidebar-group">
+          <div className="ribbon-tab-groups">
+            <div className="ribbon-tab-group">
               {budgetTabs.map((tab) => (
                 <button
-                  className={`sidebar-btn ${activeTab === tab.key ? "active" : ""}`}
+                  className={`ribbon-tab ${activeTab === tab.key ? "active" : ""}`}
                   key={tab.key}
                   onClick={() => openTab(tab.key)}
+                  type="button"
                 >
-                  <span className="sidebar-btn-content">
-                    <NavIcon name={tab.icon} />
-                    <span>{tab.label}</span>
-                  </span>
+                  <NavIcon name={tab.icon} />
+                  <span>{tab.label}</span>
                 </button>
               ))}
             </div>
-          </div>
-
-          <div className="sidebar-section">
-            <div className="sidebar-section-title">
-              <NavIcon name="management" />
-              <span>Management</span>
-            </div>
-            <div className="sidebar-group">
+            <div className="ribbon-tab-group ribbon-tab-group-secondary">
               {managementTabs.map((tab) => (
                 <button
-                  className={`sidebar-btn ${activeTab === tab.key ? "active" : ""}`}
+                  className={`ribbon-tab ${activeTab === tab.key ? "active" : ""}`}
                   key={tab.key}
                   onClick={() => openTab(tab.key)}
+                  type="button"
                 >
-                  <span className="sidebar-btn-content">
-                    <NavIcon name={tab.icon} />
-                    <span>{tab.label}</span>
-                  </span>
+                  <NavIcon name={tab.icon} />
+                  <span>{tab.label}</span>
                 </button>
               ))}
             </div>
           </div>
+        </div>
+      </header>
 
-          <div className="sidebar-group quick-actions">
-            <p className="sidebar-label">Quick Actions</p>
-            <p className="sidebar-mini-label">Budget</p>
-            <button className="sidebar-btn quick-btn" onClick={() => openTab("expenses")}>
-              <span className="sidebar-btn-content">
-                <NavIcon name="add" />
-                <span>Add Expense</span>
-              </span>
-            </button>
-            <button className="sidebar-btn quick-btn" onClick={() => openTab("invoices")}>
-              <span className="sidebar-btn-content">
-                <NavIcon name="invoices" />
-                <span>Only Invoices</span>
-              </span>
-            </button>
-            <p className="sidebar-mini-label">Management</p>
-            <button className="sidebar-btn quick-btn" onClick={() => openTab("tasks")}>
-              <span className="sidebar-btn-content">
-                <NavIcon name="tasks" />
-                <span>Open Tasks</span>
-              </span>
-            </button>
-            <button className="sidebar-btn quick-btn" onClick={() => refresh()} disabled={loading}>
-              <span className="sidebar-btn-content">
-                <NavIcon name="refresh" />
-                <span>Refresh Data</span>
-              </span>
-            </button>
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}>
-              <span className="sidebar-btn-content">
-                <NavIcon name="logout" />
-                <span>Logout</span>
-              </span>
-            </button>
-          </div>
-        </aside>
+      <section className="main-column ribbon-main-column">
+        {activeTab === "dashboard" && (
+          <header className="dashboard-head panel ribbon-page-head">
+            <div className="dashboard-title">
+              <p className="eyebrow">{activeTab === "dashboard" ? "Dashboard" : activeSection === "budget" ? "Budget Workspace" : "Management Workspace"}</p>
+              <h1>{pageTitle}</h1>
+              <p className="muted">
+                {activeSection === "budget"
+                  ? "Budget planning, invoices, and expense cash tracking for your build."
+                  : "Execution tracking, worker profiles, and team coordination for construction."}
+              </p>
+            </div>
 
-        <section className="main-column">
-          {activeTab !== "invoices" && (
-            <header className="dashboard-head panel">
-              <div className="dashboard-title">
-                <p className="eyebrow">Home Construction Dashboard</p>
-                <h1>{pageTitle}</h1>
-                <p className="muted">
-                  {activeSection === "budget"
-                    ? "Budget planning, invoices, and expense cash tracking for your build."
-                    : "Execution tracking, worker profiles, and team coordination for construction."}
-                </p>
+            <div className="ribbon-page-meta">
+              <div>
+                <span>Last Update</span>
+                <strong>{lastUpdatedLabel}</strong>
               </div>
-
-              <div className="kpi-grid">
-                <article className="kpi-card">
-                  <p>Budget</p>
-                  <h3>{formatCurrency(summary?.metrics.totalBudget ?? 0)}</h3>
-                </article>
-                <article className="kpi-card">
-                  <p>Spent (Paid)</p>
-                  <h3>{formatCurrency(summary?.metrics.totalSpent ?? 0)}</h3>
-                </article>
-                <article className="kpi-card">
-                  <p>Committed</p>
-                  <h3>{formatCurrency(summary?.metrics.unpaidCommitted ?? 0)}</h3>
-                </article>
-                <article className="kpi-card">
-                  <p>Tasks</p>
-                  <h3>{totalTasks}</h3>
-                </article>
+              <div>
+                <span>Month</span>
+                <strong>{currentMonthLabel}</strong>
               </div>
-            </header>
+            </div>
+
+            <div className="kpi-grid">
+              <article className="kpi-card kpi-card-budget">
+                <p>Budget</p>
+                {editingBudget ? (
+                  <form className="kpi-budget-editor" onSubmit={handleSaveBudget}>
+                    <div className="kpi-budget-field">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={budgetInput}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          if (!nextValue.trim()) {
+                            setBudgetInput("");
+                            return;
+                          }
+
+                          setBudgetInput(formatBudgetAmount(parseBudgetAmount(nextValue)));
+                        }}
+                        disabled={savingBudget}
+                        aria-label="Edit budget"
+                        autoFocus
+                      />
+                      <div className="kpi-budget-editor-actions">
+                        <button
+                          className="kpi-inline-icon primary"
+                          type="submit"
+                          disabled={savingBudget || parseBudgetAmount(budgetInput) < 1}
+                          aria-label="Save budget"
+                        >
+                          <NavIcon name="confirm" />
+                        </button>
+                        <button
+                          className="kpi-inline-icon"
+                          type="button"
+                          onClick={cancelBudgetEdit}
+                          disabled={savingBudget}
+                          aria-label="Cancel budget edit"
+                        >
+                          <NavIcon name="close" />
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="kpi-value-row">
+                    <h3>{formatBudgetAmount(summary?.metrics.totalBudget ?? 0)}</h3>
+                    {isOwner && (
+                      <button className="kpi-edit-btn" type="button" onClick={startBudgetEdit} aria-label="Edit budget">
+                        <NavIcon name="edit" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </article>
+              <article className="kpi-card kpi-card-spent">
+                <p>Spent (Paid)</p>
+                <h3>{formatCurrency(summary?.metrics.totalSpent ?? 0)}</h3>
+              </article>
+              <article className="kpi-card kpi-card-committed">
+                <p>Committed</p>
+                <h3>{formatCurrency(summary?.metrics.unpaidCommitted ?? 0)}</h3>
+              </article>
+              <article className="kpi-card kpi-card-remaining">
+                <p>Unused Funds</p>
+                <h3>{formatCurrency(summary?.metrics.remainingBudget ?? 0)}</h3>
+              </article>
+              <article className="kpi-card kpi-card-cash">
+                <p>After Commitments</p>
+                <h3>{formatCurrency(summary?.metrics.remainingAfterCommitments ?? 0)}</h3>
+              </article>
+              <article className="kpi-card kpi-card-invoices">
+                <p>Open Invoices</p>
+                <h3>{summary?.metrics.unpaidInvoiceCount ?? 0}</h3>
+              </article>
+              <article className="kpi-card kpi-card-burn">
+                <p>Budget Burn</p>
+                <h3>{summary?.metrics.burnRate ?? 0}%</h3>
+              </article>
+              <article className="kpi-card kpi-card-tasks">
+                <p>Tasks</p>
+                <h3>{totalTasks}</h3>
+              </article>
+            </div>
+          </header>
+        )}
+
+        {error && <p className="error-text panel">{error}</p>}
+
+        <main className="content">
+          {loading && !summary ? (
+            <section className="panel">Loading your project dashboard...</section>
+          ) : (
+            <>
+              {activeTab === "dashboard" && (
+                <BudgetOverview
+                  summary={summary}
+                  tasks={tasks}
+                />
+              )}
+
+              {activeTab === "expenses" && (
+                <ExpenseSection
+                  expenses={expenses}
+                  tasks={tasks}
+                  canDeleteExpense={isOwner}
+                  onAddExpense={handleAddExpense}
+                  onUpdateExpense={handleUpdateExpense}
+                  onDeleteExpense={handleDeleteExpense}
+                />
+              )}
+
+              {activeTab === "invoices" && <InvoiceCenter expenses={expenses} tasks={tasks} canMarkPaid={isOwner} onInvoicePaid={refresh} />}
+
+              {activeTab === "tasks" && (
+                <TaskBoard
+                  tasks={tasks}
+                  canDeleteTask={isOwner}
+                  onCreateTask={handleCreateTask}
+                  onUpdateTask={handleUpdateTask}
+                  onDeleteTask={handleDeleteTask}
+                />
+              )}
+
+              {activeTab === "workers" && <WorkerProfiles canDelete={isOwner} />}
+
+              {activeTab === "import" && <CsvImporter canImport={isOwner} onImport={handleImport} />}
+              {activeTab === "reports" && <ReportsPanel />}
+              {activeTab === "team" && <TeamManagement currentUser={currentUser} />}
+            </>
           )}
-
-          {error && <p className="error-text panel">{error}</p>}
-
-          <main className="content">
-            {loading && !summary ? (
-              <section className="panel">Loading your project dashboard...</section>
-            ) : (
-              <>
-                {activeTab === "dashboard" && (
-                  <BudgetOverview
-                    summary={summary}
-                    project={project}
-                    canEditBudget={isOwner}
-                    onUpdateBudget={handleUpdateBudget}
-                  />
-                )}
-
-                {activeTab === "expenses" && (
-                  <ExpenseSection
-                    expenses={expenses}
-                    canDeleteExpense={isOwner}
-                    onAddExpense={handleAddExpense}
-                    onUpdateExpense={handleUpdateExpense}
-                    onDeleteExpense={handleDeleteExpense}
-                  />
-                )}
-
-                {activeTab === "invoices" && <InvoiceCenter expenses={expenses} canMarkPaid={isOwner} onInvoicePaid={refresh} />}
-
-                {activeTab === "tasks" && (
-                  <TaskBoard
-                    tasks={tasks}
-                    canDeleteTask={isOwner}
-                    onCreateTask={handleCreateTask}
-                    onUpdateTask={handleUpdateTask}
-                    onDeleteTask={handleDeleteTask}
-                  />
-                )}
-
-                {activeTab === "workers" && <WorkerProfiles canDelete={isOwner} />}
-
-                {activeTab === "import" && <CsvImporter canImport={isOwner} onImport={handleImport} />}
-                {activeTab === "reports" && <ReportsPanel />}
-                {activeTab === "team" && <TeamManagement currentUser={currentUser} />}
-              </>
-            )}
-          </main>
-        </section>
-      </div>
+        </main>
+      </section>
     </div>
   );
 }

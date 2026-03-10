@@ -11,6 +11,7 @@ import type {
   Project,
   ReportAlert,
   Task,
+  TaskListResponse,
   TaskInput,
   UserRole,
   Vendor,
@@ -191,13 +192,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
-  markInvoicePaid: (id: string, payload?: { paidDate?: string; phase?: string; notes?: string; itemIndexes?: number[] }) =>
+  markInvoicePaid: (
+    id: string,
+    payload?: { paidDate?: string; phase?: string; phaseTaskId?: string; section?: string; sectionTaskId?: string; notes?: string; itemIndexes?: number[] }
+  ) =>
     request<{ invoice: Invoice; createdExpenses: number; mergedTallies?: number; ignoredItems?: number; newlyPaidItems?: number; alreadyPaidItems?: number; remainingUnpaidItems?: number }>(`/invoices/${id}/mark-paid`, {
       method: "PATCH",
       body: JSON.stringify(payload ?? {})
     }),
 
-  getTasks: () => request<{ tasks: Task[] }>("/tasks"),
+  getTasks: () => request<TaskListResponse>("/tasks"),
   addTask: (payload: TaskInput) =>
     request<{ task: Task }>("/tasks", {
       method: "POST",

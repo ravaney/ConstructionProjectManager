@@ -30,10 +30,21 @@ export type Attachment = {
   size: number;
   storage: "cloudinary" | "local";
   publicId?: string;
-  entityType: "expense" | "task";
+  entityType: "expense" | "task" | "project";
   entityId: string;
   uploadedBy: string;
   createdAt: string;
+};
+
+export type FloorPlanPoint = {
+  x: number;
+  y: number;
+};
+
+export type FloorPlanStroke = {
+  color: string;
+  width: number;
+  points: FloorPlanPoint[];
 };
 
 export type ReportAlert = {
@@ -92,6 +103,12 @@ export type Invoice = {
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
+  phase: string;
+  phaseTaskId?: string;
+  section?: string;
+  sectionTaskId?: string;
+  subsection?: string;
+  subsectionTaskId?: string;
   status: "UNPAID" | "PARTIALLY_PAID" | "PAID";
   currency: string;
   notes: string;
@@ -106,6 +123,12 @@ export type InvoiceInput = {
   invoiceNumber: string;
   issueDate?: string;
   dueDate: string;
+  phase?: string;
+  phaseTaskId?: string;
+  section?: string;
+  sectionTaskId?: string;
+  subsection?: string;
+  subsectionTaskId?: string;
   currency?: string;
   notes?: string;
   items: InvoiceItem[];
@@ -119,6 +142,11 @@ export type Expense = {
   date: string;
   vendor: string;
   phase: string;
+  phaseTaskId?: string;
+  section?: string;
+  sectionTaskId?: string;
+  subsection?: string;
+  subsectionTaskId?: string;
   unit: string;
   unitPrice: number;
   quantity: number;
@@ -137,6 +165,11 @@ export type ExpenseInput = {
   date?: string;
   vendor?: string;
   phase?: string;
+  phaseTaskId?: string;
+  section?: string;
+  sectionTaskId?: string;
+  subsection?: string;
+  subsectionTaskId?: string;
   unit?: string;
   unitPrice?: number;
   quantity?: number;
@@ -184,28 +217,63 @@ export type ExpenseTallyDetails = {
 };
 
 export type TaskStatus = "PLANNED" | "IN_PROGRESS" | "BLOCKED" | "DONE";
+export type TaskNodeType = "PHASE" | "SECTION" | "TASK";
+
+export type TaskFinancials = {
+  directSpent: number;
+  directCommitted: number;
+  rolledSpent: number;
+  rolledCommitted: number;
+  rolledEstimate: number;
+  remaining: number;
+};
+
+export type TaskProgress = {
+  totalTasks: number;
+  completedTasks: number;
+  percentComplete: number;
+};
 
 export type Task = {
   _id: string;
   title: string;
   description: string;
   phase: string;
+  section: string;
+  nodeType: TaskNodeType;
+  parentTaskId?: string;
+  phaseTaskId?: string;
+  sectionTaskId?: string;
   status: TaskStatus;
   owner: string;
   dueDate?: string;
   priority: "LOW" | "MEDIUM" | "HIGH";
   budgetImpact: number;
+  estimateAmount: number;
+  sortOrder: number;
+  closedAt?: string;
+  financials: TaskFinancials;
+  progress: TaskProgress;
 };
 
 export type TaskInput = {
   title: string;
   description?: string;
-  phase?: string;
+  nodeType?: TaskNodeType;
+  parentTaskId?: string;
   status?: TaskStatus;
   owner?: string;
   dueDate?: string;
   priority?: "LOW" | "MEDIUM" | "HIGH";
   budgetImpact?: number;
+  estimateAmount?: number;
+  sortOrder?: number;
+};
+
+export type TaskListResponse = {
+  tasks: Task[];
+  currentPhaseId?: string;
+  currentSectionId?: string;
 };
 
 export type Project = {
@@ -215,6 +283,9 @@ export type Project = {
   totalBudget: number;
   currency: string;
   notes: string;
+  floorPlanMarkup?: {
+    strokes: FloorPlanStroke[];
+  };
 };
 
 export type DashboardSummary = {

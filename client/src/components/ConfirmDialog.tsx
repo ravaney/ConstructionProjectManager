@@ -4,6 +4,7 @@ type ConfirmDialogProps = {
   message: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  busyLabel?: string;
   busy?: boolean;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
@@ -26,6 +27,7 @@ export function ConfirmDialog({
   message,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
+  busyLabel = "Working...",
   busy = false,
   onConfirm,
   onCancel
@@ -51,7 +53,7 @@ export function ConfirmDialog({
             {cancelLabel}
           </button>
           <button className="btn danger" type="button" onClick={() => void onConfirm()} disabled={busy}>
-            {busy ? "Deleting..." : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>

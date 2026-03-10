@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireRole } from "../middleware/auth.js";
 import { ExpenseModel } from "../models/Expense.js";
 import { InvoiceModel } from "../models/Invoice.js";
+import { resolveTaskScope, syncTaskHierarchyState } from "../utils/taskHierarchy.js";
 
 const router = Router();
 
@@ -29,6 +30,10 @@ const createInvoiceSchema = z.object({
   invoiceNumber: z.string().min(1),
   issueDate: z.string().optional(),
   dueDate: z.string(),
+  phase: z.string().optional(),
+  phaseTaskId: z.string().optional(),
+  section: z.string().optional(),
+  sectionTaskId: z.string().optional(),
   currency: z.string().min(3).max(3).optional(),
   notes: z.string().optional(),
   items: z.array(invoiceItemSchema).min(1)
@@ -46,6 +51,22 @@ function isMaterialsCategory(category: string): boolean {
 
 function toMoney(value: number): number {
   return Number(value.toFixed(2));
+}
+
+function toIdString(value: unknown): string {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object" && value !== null && "toString" in value) {
+    return value.toString();
+  }
+
+  return "";
 }
 
 function resolveInvoiceItemAmount(item: { quantity?: number; unitPrice?: number; amount?: number }): number {
@@ -77,6 +98,7 @@ function normalizeInvoiceItems(items: ParsedInvoiceItem[]) {
 
 router.get("/", async (req, res, next) => {
   try {
+    await syncTaskHierarchyState();
     const { status } = listQuerySchema.parse(req.query);
     const filters: Record<string, string> = {};
 
@@ -106,6 +128,7 @@ router.get("/", async (req, res, next) => {
 router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
     const payload = createInvoiceSchema.parse(req.body);
+    const scope = await resolveTaskScope(payload);
     const normalizedItems = normalizeInvoiceItems(payload.items);
     const computedTotal = normalizedItems.reduce((sum, item) => sum + (item.recordOnly ? 0 : item.amount), 0);
 
@@ -114,6 +137,10 @@ router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
       invoiceNumber: payload.invoiceNumber,
       issueDate: payload.issueDate ? new Date(payload.issueDate) : new Date(),
       dueDate: new Date(payload.dueDate),
+      phase: scope.phase,
+      phaseTaskId: scope.phaseTaskId,
+      section: scope.section,
+      sectionTaskId: scope.sectionTaskId,
       currency: payload.currency ?? "USD",
       notes: payload.notes ?? "",
       items: normalizedItems,
@@ -139,25 +166,69 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
       return;
     }
 
-    if (invoice.status !== "UNPAID") {
-      res.status(409).json({ message: "Only unpaid invoices can be fully edited" });
+    if (invoice.status === "PAID") {
+      res.status(409).json({ message: "Paid invoices cannot be edited" });
       return;
     }
 
+    const scope = await resolveTaskScope(payload);
     const normalizedItems = normalizeInvoiceItems(payload.items);
-    const computedTotal = normalizedItems.reduce((sum, item) => sum + (item.recordOnly ? 0 : item.amount), 0);
+    const mergedItems =
+      invoice.status === "PARTIALLY_PAID"
+        ? (() => {
+            if (normalizedItems.length !== invoice.items.length) {
+              throw new Error("Partially paid invoices cannot add or remove line items");
+            }
+
+            return normalizedItems.map((item, index) => {
+              const existingItem = invoice.items[index];
+              if (!existingItem) {
+                return item;
+              }
+
+              if (existingItem.paid) {
+                return {
+                  ...item,
+                  paid: true,
+                  paidAt: existingItem.paidAt,
+                  paidExpenseId: existingItem.paidExpenseId
+                };
+              }
+
+              return item;
+            });
+          })()
+        : normalizedItems;
+    const computedTotal = mergedItems.reduce((sum, item) => sum + (item.recordOnly ? 0 : item.amount), 0);
+    const paidAmount = mergedItems.reduce(
+      (sum, item) => sum + (item.paid && !item.recordOnly ? resolveInvoiceItemAmount(item) : 0),
+      0
+    );
+    const remainingUnpaidItems = mergedItems.filter((item) => !item.paid).length;
 
     invoice.vendor = payload.vendor;
     invoice.invoiceNumber = payload.invoiceNumber;
     invoice.issueDate = payload.issueDate ? new Date(payload.issueDate) : invoice.issueDate;
     invoice.dueDate = new Date(payload.dueDate);
+    invoice.phase = scope.phase;
+    invoice.phaseTaskId = scope.phaseTaskId as any;
+    invoice.section = scope.section;
+    invoice.sectionTaskId = scope.sectionTaskId as any;
     invoice.currency = payload.currency ?? invoice.currency ?? "USD";
     invoice.notes = payload.notes ?? "";
-    invoice.items = normalizedItems as any;
+    invoice.items = mergedItems as any;
     invoice.totalAmount = computedTotal;
-    invoice.paidAmount = 0;
-    invoice.paidAt = undefined;
-    invoice.generatedExpenseIds = [];
+    invoice.paidAmount = Number(paidAmount.toFixed(2));
+    if (remainingUnpaidItems === 0) {
+      invoice.status = "PAID";
+    } else if (invoice.paidAmount > 0) {
+      invoice.status = "PARTIALLY_PAID";
+      invoice.paidAt = undefined;
+    } else {
+      invoice.status = "UNPAID";
+      invoice.paidAt = undefined;
+      invoice.generatedExpenseIds = [];
+    }
     await invoice.save();
 
     res.json({ invoice });
@@ -171,6 +242,9 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
     const payloadSchema = z.object({
       paidDate: z.string().optional(),
       phase: z.string().optional(),
+      phaseTaskId: z.string().optional(),
+      section: z.string().optional(),
+      sectionTaskId: z.string().optional(),
       notes: z.string().optional(),
       itemIndexes: z.array(z.coerce.number().int().min(0)).optional()
     });
@@ -203,7 +277,13 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
     }
 
     const paidDate = payload.paidDate ? new Date(payload.paidDate) : new Date();
-    const phase = payload.phase ?? "Phase 1";
+    const scope = await resolveTaskScope({
+      phaseTaskId: payload.phaseTaskId ?? toIdString(invoice.phaseTaskId),
+      sectionTaskId: payload.sectionTaskId ?? toIdString(invoice.sectionTaskId),
+      phase: payload.phase ?? invoice.phase,
+      section: payload.section ?? invoice.section
+    });
+    const phase = scope.phase;
     const generatedExpenseIds: Array<typeof invoice.generatedExpenseIds[number]> = [...invoice.generatedExpenseIds];
     let createdExpenses = 0;
     let mergedTallies = 0;
@@ -242,7 +322,8 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
         const tallyCandidates = await ExpenseModel.find({
           name: tallyName,
           category: { $regex: /^materials/i },
-          phase
+          phase,
+          section: scope.section
         }).sort({ updatedAt: -1 });
         const existingTally =
           tallyCandidates.find((candidate) => (candidate.unit ?? "").trim().toLowerCase() === tallyUnit.toLowerCase()) ??
@@ -260,6 +341,10 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
           }
           existingTally.date = paidDate;
           existingTally.vendor = invoice.vendor;
+          existingTally.phase = scope.phase;
+          existingTally.phaseTaskId = scope.phaseTaskId as any;
+          existingTally.section = scope.section;
+          existingTally.sectionTaskId = scope.sectionTaskId as any;
           existingTally.notes = payload.notes ?? invoice.notes;
           existingTally.source = "invoice-paid-tally";
           existingTally.workerRole = normalizedWorkerRole;
@@ -285,6 +370,9 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
           date: paidDate,
           vendor: invoice.vendor,
           phase,
+          phaseTaskId: scope.phaseTaskId,
+          section: scope.section,
+          sectionTaskId: scope.sectionTaskId,
           unit: tallyUnit,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
@@ -314,6 +402,9 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
         date: paidDate,
         vendor: invoice.vendor,
         phase,
+        phaseTaskId: scope.phaseTaskId,
+        section: scope.section,
+        sectionTaskId: scope.sectionTaskId,
         unit: item.unit ?? "",
         unitPrice: item.unitPrice,
         quantity: item.quantity,

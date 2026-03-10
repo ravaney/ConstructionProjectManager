@@ -14,7 +14,7 @@ const attachmentSchema = new Schema(
     publicId: { type: String },
     entityType: {
       type: String,
-      enum: ["expense", "task"],
+      enum: ["expense", "task", "project"],
       required: true
     },
     entityId: { type: String, required: true },

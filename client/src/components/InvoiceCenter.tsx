@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Expense, Invoice, InvoiceInput, InvoiceItem, Vendor } from "../types/models";
+import type { Expense, Invoice, InvoiceInput, InvoiceItem, Task, Vendor } from "../types/models";
 import { api } from "../utils/api";
 import { formatCurrency, formatDate } from "../utils/format";
+import { buildScopeLabel, getCurrentPhase, getCurrentSection, getPhaseNodes, getSectionsForPhase } from "../utils/workBreakdown";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
   defaultMaterialPresets,
   isMaterialsCategory,
@@ -19,7 +21,7 @@ import {
 
 const invoiceCategoryOptions = [
   "Materials",
-  "Labor Cost",
+  "Labour Cost",
   "Subcontractor Services",
   "Equipment Rental",
   "Permits & Fees",
@@ -36,6 +38,11 @@ const invoiceCategoryOptions = [
 
 const baseMaterialOptions = ["Cement", "Steel", "Lumber", "Sand", "Gravel", "Blocks", "Binding Wire"] as const;
 const unitOptions = ["Bag", "Ton", "Load", "Cubic Yard", "Cubic Meter", "Block", "Kg", "Lb", "Ft", "M", "Sheet"] as const;
+const invoiceStatusLabels = {
+  UNPAID: "Unpaid",
+  PARTIALLY_PAID: "Partially paid",
+  PAID: "Paid"
+} as const;
 
 function parseWholeNumber(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -45,6 +52,19 @@ function parseWholeNumber(value: string): number {
 function buildMaterialsCategory(subcategory?: string): string {
   const normalized = (subcategory ?? "").trim();
   return normalized ? `Materials / ${normalized}` : "Materials";
+}
+
+function normalizeInvoiceCategory(category?: string): string {
+  const normalized = (category ?? "").trim();
+  if (normalized === "Labor Cost") {
+    return "Labour Cost";
+  }
+
+  if (normalized.startsWith("Labor Cost /")) {
+    return normalized.replace("Labor Cost /", "Labour Cost /").trim();
+  }
+
+  return normalized;
 }
 
 function formatHistory(history: Array<{ unitPrice: number; changedAt: string }>): string {
@@ -57,6 +77,76 @@ function formatHistory(history: Array<{ unitPrice: number; changedAt: string }>)
     .reverse()
     .map((entry) => `${new Date(entry.changedAt).toLocaleDateString()}: $${entry.unitPrice.toFixed(2)}`)
     .join("\n");
+}
+
+function getInvoicePaidAmount(invoice: Invoice): number {
+  if (typeof invoice.paidAmount === "number") {
+    return invoice.paidAmount;
+  }
+
+  return invoice.items.reduce((sum, item) => sum + (item.paid ? item.amount : 0), 0);
+}
+
+function getInvoiceOutstandingAmount(invoice: Invoice): number {
+  return Math.max(0, Number((invoice.totalAmount - getInvoicePaidAmount(invoice)).toFixed(2)));
+}
+
+function getDaysUntil(dateValue: string): number | null {
+  const dueDate = new Date(dateValue);
+  if (Number.isNaN(dueDate.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  const dueDay = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.round((dueDay.getTime() - todayDay.getTime()) / 86_400_000);
+}
+
+function getInvoiceDueTone(invoice: Invoice): "paid" | "overdue" | "soon" | "scheduled" {
+  if (invoice.status === "PAID") {
+    return "paid";
+  }
+
+  const daysUntilDue = getDaysUntil(invoice.dueDate);
+  if (daysUntilDue === null) {
+    return "scheduled";
+  }
+
+  if (daysUntilDue < 0) {
+    return "overdue";
+  }
+
+  if (daysUntilDue <= 7) {
+    return "soon";
+  }
+
+  return "scheduled";
+}
+
+function getInvoiceDueSummary(invoice: Invoice): string {
+  if (invoice.status === "PAID") {
+    return invoice.paidAt ? `Paid ${formatDate(invoice.paidAt)}` : "Settled";
+  }
+
+  const daysUntilDue = getDaysUntil(invoice.dueDate);
+  if (daysUntilDue === null) {
+    return "Schedule unavailable";
+  }
+
+  if (daysUntilDue < 0) {
+    return `${Math.abs(daysUntilDue)} day${Math.abs(daysUntilDue) === 1 ? "" : "s"} overdue`;
+  }
+
+  if (daysUntilDue === 0) {
+    return "Due today";
+  }
+
+  if (daysUntilDue <= 7) {
+    return `Due in ${daysUntilDue} day${daysUntilDue === 1 ? "" : "s"}`;
+  }
+
+  return "On schedule";
 }
 
 function VendorIcon() {
@@ -80,8 +170,18 @@ function MaterialIcon() {
   );
 }
 
+function ViewIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
 type InvoiceCenterProps = {
   expenses: Expense[];
+  tasks: Task[];
   canMarkPaid: boolean;
   onInvoicePaid: () => Promise<void>;
 };
@@ -107,11 +207,15 @@ function toInvoiceInput(invoice: Invoice): InvoiceInput {
     invoiceNumber: invoice.invoiceNumber,
     issueDate: invoice.issueDate.slice(0, 10),
     dueDate: invoice.dueDate.slice(0, 10),
+    phase: invoice.phase,
+    phaseTaskId: invoice.phaseTaskId,
+    section: invoice.section ?? "",
+    sectionTaskId: invoice.sectionTaskId,
     currency: invoice.currency,
     notes: invoice.notes,
     items: invoice.items.map((item) => ({
       description: item.description,
-      category: item.category,
+      category: normalizeInvoiceCategory(item.category),
       workerRole: item.workerRole ?? "OTHER",
       quantity: item.quantity,
       unit: item.unit ?? "",
@@ -126,7 +230,9 @@ function toInvoiceInput(invoice: Invoice): InvoiceInput {
   };
 }
 
-export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceCenterProps) {
+export function InvoiceCenter({ expenses, tasks, canMarkPaid, onInvoicePaid }: InvoiceCenterProps) {
+  const phaseNodes = useMemo(() => getPhaseNodes(tasks), [tasks]);
+  const currentPhase = useMemo(() => getCurrentPhase(tasks), [tasks]);
   const [statusFilter, setStatusFilter] = useState<"ALL" | "UNPAID" | "PARTIALLY_PAID" | "PAID">("ALL");
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [saving, setSaving] = useState(false);
@@ -136,7 +242,9 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
   const [invoiceDraft, setInvoiceDraft] = useState<InvoiceInput | null>(null);
   const [editingInvoice, setEditingInvoice] = useState(false);
   const [savingInvoiceEdit, setSavingInvoiceEdit] = useState(false);
+  const [payingInvoice, setPayingInvoice] = useState(false);
   const [selectedPayIndexes, setSelectedPayIndexes] = useState<number[]>([]);
+  const [confirmPayInvoice, setConfirmPayInvoice] = useState(false);
   const [showCreateInvoice, setShowCreateInvoice] = useState(false);
   const [showVendorManager, setShowVendorManager] = useState(false);
   const [showPresetManager, setShowPresetManager] = useState(false);
@@ -156,10 +264,16 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
     invoiceNumber: "",
     issueDate: new Date().toISOString().slice(0, 10),
     dueDate: new Date().toISOString().slice(0, 10),
+    phase: "",
+    phaseTaskId: "",
+    section: "",
+    sectionTaskId: "",
     currency: "USD",
     notes: "",
     items: [createEmptyItem()]
   });
+  const formSections = useMemo(() => getSectionsForPhase(tasks, form.phaseTaskId), [tasks, form.phaseTaskId]);
+  const draftSections = useMemo(() => getSectionsForPhase(tasks, invoiceDraft?.phaseTaskId), [tasks, invoiceDraft?.phaseTaskId]);
 
   const materialOptions = useMemo(() => {
     return Array.from(new Set([...baseMaterialOptions, ...materialPresets.map((preset) => preset.name)])).sort();
@@ -226,6 +340,70 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
       return current;
     });
   }, [vendors]);
+
+  useEffect(() => {
+    if (!phaseNodes.length) {
+      return;
+    }
+
+    setForm((current) => {
+      if (current.phaseTaskId) {
+        return current;
+      }
+
+      const nextPhase = currentPhase ?? phaseNodes[0];
+      if (!nextPhase) {
+        return current;
+      }
+
+      const nextSection = getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0];
+      return {
+        ...current,
+        phase: nextPhase.title,
+        phaseTaskId: nextPhase._id,
+        section: nextSection?.title ?? "",
+        sectionTaskId: nextSection?._id ?? ""
+      };
+    });
+  }, [currentPhase, phaseNodes, tasks]);
+
+  function findPhaseIdByName(phaseName?: string): string {
+    return phaseNodes.find((phase) => phase.title === (phaseName ?? "").trim())?._id ?? "";
+  }
+
+  function findSectionIdByName(phaseId?: string, sectionName?: string): string {
+    return getSectionsForPhase(tasks, phaseId).find((section) => section.title === (sectionName ?? "").trim())?._id ?? "";
+  }
+
+  function applyScopeToForm(phaseId: string, sectionId?: string) {
+    const phaseNode = phaseNodes.find((phase) => phase._id === phaseId);
+    const sectionNode = getSectionsForPhase(tasks, phaseId).find((section) => section._id === sectionId);
+
+    setForm((current) => ({
+      ...current,
+      phase: phaseNode?.title ?? "",
+      phaseTaskId: phaseNode?._id ?? "",
+      section: sectionNode?.title ?? "",
+      sectionTaskId: sectionNode?._id ?? ""
+    }));
+  }
+
+  function applyScopeToDraft(phaseId: string, sectionId?: string) {
+    const phaseNode = phaseNodes.find((phase) => phase._id === phaseId);
+    const sectionNode = getSectionsForPhase(tasks, phaseId).find((section) => section._id === sectionId);
+
+    setInvoiceDraft((current) =>
+      current
+        ? {
+            ...current,
+            phase: phaseNode?.title ?? "",
+            phaseTaskId: phaseNode?._id ?? "",
+            section: sectionNode?.title ?? "",
+            sectionTaskId: sectionNode?._id ?? ""
+          }
+        : current
+    );
+  }
 
   function updatePreset(id: string, patch: Partial<Omit<MaterialPreset, "id">>) {
     setMaterialPresets((current) =>
@@ -398,6 +576,26 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
     return invoiceDraft.items.reduce((sum, item) => sum + (item.recordOnly ? 0 : item.amount), 0);
   }, [invoiceDraft]);
 
+  const invoiceSummary = useMemo(() => {
+    const totalInvoiced = invoices.reduce((sum, invoice) => sum + invoice.totalAmount, 0);
+    const outstandingBalance = invoices.reduce((sum, invoice) => sum + getInvoiceOutstandingAmount(invoice), 0);
+    const unpaidCount = invoices.filter((invoice) => invoice.status === "UNPAID").length;
+    const partialCount = invoices.filter((invoice) => invoice.status === "PARTIALLY_PAID").length;
+    const paidCount = invoices.filter((invoice) => invoice.status === "PAID").length;
+    const overdueCount = invoices.filter((invoice) => getInvoiceDueTone(invoice) === "overdue").length;
+    const dueSoonCount = invoices.filter((invoice) => getInvoiceDueTone(invoice) === "soon").length;
+
+    return {
+      totalInvoiced,
+      outstandingBalance,
+      unpaidCount,
+      partialCount,
+      paidCount,
+      overdueCount,
+      dueSoonCount
+    };
+  }, [invoices]);
+
   async function handleCreateInvoice(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -410,11 +608,17 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
         items: form.items.filter((item) => item.description.trim().length > 0)
       });
 
+      const nextPhase = currentPhase ?? phaseNodes[0];
+      const nextSection = nextPhase ? getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0] : undefined;
       setForm({
         vendor: vendors.length === 1 ? vendors[0].name : "",
         invoiceNumber: "",
         issueDate: new Date().toISOString().slice(0, 10),
         dueDate: new Date().toISOString().slice(0, 10),
+        phase: nextPhase?.title ?? "",
+        phaseTaskId: nextPhase?._id ?? "",
+        section: nextSection?.title ?? "",
+        sectionTaskId: nextSection?._id ?? "",
         currency: "USD",
         notes: "",
         items: [createEmptyItem()]
@@ -432,9 +636,16 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
 
   function openInvoice(invoice: Invoice) {
     setActiveInvoice(invoice);
-    setInvoiceDraft(toInvoiceInput(invoice));
+    const phaseTaskId = invoice.phaseTaskId ?? findPhaseIdByName(invoice.phase);
+    const sectionTaskId = invoice.sectionTaskId ?? findSectionIdByName(phaseTaskId, invoice.section);
+    setInvoiceDraft({
+      ...toInvoiceInput(invoice),
+      phaseTaskId,
+      sectionTaskId
+    });
     setEditingInvoice(false);
     setSelectedPayIndexes([]);
+    setConfirmPayInvoice(false);
   }
 
   function updateInvoiceDraftItem(index: number, patch: Partial<InvoiceItem>) {
@@ -510,23 +721,34 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
 
   async function markPaid(invoiceId: string, itemIndexes?: number[]) {
     try {
-      const result = await api.markInvoicePaid(invoiceId, { phase: "Phase 1", itemIndexes });
+      setPayingInvoice(true);
+      const scopeSource = activeInvoice ?? invoices.find((invoice) => invoice._id === invoiceId);
+      const result = await api.markInvoicePaid(invoiceId, {
+        phase: scopeSource?.phase,
+        phaseTaskId: scopeSource?.phaseTaskId,
+        section: scopeSource?.section,
+        sectionTaskId: scopeSource?.sectionTaskId,
+        itemIndexes
+      });
       await refresh();
       await onInvoicePaid();
       setActionMessage(
-        `Marked paid. ${result.createdExpenses} new expense row(s), ${result.mergedTallies ?? 0} material tally update(s), ${result.ignoredItems ?? 0} not-paid line(s) ignored.`
+        `Marked paid. ${result.createdExpenses} new expense row(s), ${result.mergedTallies ?? 0} material tally update(s), ${result.ignoredItems ?? 0} journal-only line(s) marked paid without affecting totals.`
       );
       setActiveInvoice(result.invoice);
       setInvoiceDraft(toInvoiceInput(result.invoice));
       setEditingInvoice(false);
       setSelectedPayIndexes([]);
+      setConfirmPayInvoice(false);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Failed to mark invoice paid");
+    } finally {
+      setPayingInvoice(false);
     }
   }
 
   return (
-    <section className="invoice-page">
+    <section className="stack-lg">
       {actionMessage && <p className="success-text">{actionMessage}</p>}
 
       {showCreateInvoice && (
@@ -603,6 +825,32 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                 />
               </label>
               <label>
+                Phase
+                <select value={form.phaseTaskId ?? ""} onChange={(event) => applyScopeToForm(event.target.value)}>
+                  <option value="">{phaseNodes.length > 0 ? "Select phase" : "No phases yet"}</option>
+                  {phaseNodes.map((phase) => (
+                    <option key={phase._id} value={phase._id}>
+                      {phase.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Section
+                <select
+                  value={form.sectionTaskId ?? ""}
+                  onChange={(event) => applyScopeToForm(form.phaseTaskId ?? "", event.target.value)}
+                  disabled={!form.phaseTaskId || formSections.length === 0}
+                >
+                  <option value="">{formSections.length > 0 ? "No section" : "No sections"}</option>
+                  {formSections.map((section) => (
+                    <option key={section._id} value={section._id}>
+                      {section.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 Notes
                 <input
                   value={form.notes}
@@ -663,7 +911,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                         </td>
                         <td>
                           <select
-                            value={isMaterialsCategory(item.category) ? "Materials" : item.category}
+                            value={isMaterialsCategory(item.category) ? "Materials" : normalizeInvoiceCategory(item.category)}
                             onChange={(event) => {
                               const nextCategory = event.target.value;
                               if (nextCategory === "Materials") {
@@ -930,76 +1178,122 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
         </div>
       )}
 
-      <div className="panel invoice-list-panel">
-        <div className="invoice-list-head">
-          <div className="invoice-list-meta">
-            <h3>Invoices</h3>
-            <p className="muted">
-              {invoices.length} {invoices.length === 1 ? "invoice" : "invoices"}
-            </p>
-          </div>
-          <div className="inline-form wrap invoice-list-actions">
+      <header className="invoice-hero panel">
+        <div className="invoice-hero-copy">
+          <p className="eyebrow">Budget Control</p>
+          <h1>Invoice Center</h1>
+          <p className="muted">
+            Track due balances, spot overdue vendors early, and open invoices for payment actions from one place.
+          </p>
+          <div className="invoice-hero-actions">
             <button className="btn" type="button" onClick={() => setShowCreateInvoice(true)}>
               Create Invoice
             </button>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "ALL" | "UNPAID" | "PARTIALLY_PAID" | "PAID")}>
-              <option value="ALL">All invoices</option>
-              <option value="UNPAID">Only unpaid invoices</option>
-              <option value="PARTIALLY_PAID">Partially paid invoices</option>
-              <option value="PAID">Only paid invoices</option>
-            </select>
+          </div>
+        </div>
+
+        <div className="invoice-hero-stats">
+          <article className="invoice-stat-card">
+            <span className="invoice-stat-label">Invoices in view</span>
+            <strong>{invoices.length}</strong>
+            <span className="invoice-stat-meta">
+              {invoiceSummary.paidCount} paid, {invoiceSummary.unpaidCount + invoiceSummary.partialCount} still active
+            </span>
+          </article>
+          <article className="invoice-stat-card invoice-stat-card-accent">
+            <span className="invoice-stat-label">Outstanding balance</span>
+            <strong>{formatCurrency(invoiceSummary.outstandingBalance)}</strong>
+            <span className="invoice-stat-meta">Across {invoiceSummary.unpaidCount + invoiceSummary.partialCount} open invoices</span>
+          </article>
+          <article className="invoice-stat-card">
+            <span className="invoice-stat-label">Attention needed</span>
+            <strong>{invoiceSummary.overdueCount + invoiceSummary.dueSoonCount}</strong>
+            <span className="invoice-stat-meta">
+              {invoiceSummary.overdueCount} overdue, {invoiceSummary.dueSoonCount} due within 7 days
+            </span>
+          </article>
+          <article className="invoice-stat-card">
+            <span className="invoice-stat-label">Invoice value</span>
+            <strong>{formatCurrency(invoiceSummary.totalInvoiced)}</strong>
+            <span className="invoice-stat-meta">Current filtered pipeline</span>
+          </article>
+        </div>
+      </header>
+
+      <div className="panel stack-sm invoice-table-panel">
+        <div className="invoice-table-header row-between wrap">
+          <div className="invoice-section-copy">
+            <h3>Invoice register</h3>
+            <p className="muted small-text">Open any invoice for line-level details, editing, and selective payment handling.</p>
+          </div>
+          <div className="invoice-toolbar">
+            <label className="invoice-filter-control">
+              <span>View</span>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "ALL" | "UNPAID" | "PARTIALLY_PAID" | "PAID")}>
+                <option value="ALL">All invoices</option>
+                <option value="UNPAID">Only unpaid invoices</option>
+                <option value="PARTIALLY_PAID">Partially paid invoices</option>
+                <option value="PAID">Only paid invoices</option>
+              </select>
+            </label>
+            <button className="tool-btn" type="button" onClick={() => setShowVendorManager(true)}>
+              <VendorIcon />
+              <span>Manage Vendors</span>
+            </button>
+            <button className="tool-btn" type="button" onClick={() => setShowPresetManager(true)}>
+              <MaterialIcon />
+              <span>Material Presets</span>
+            </button>
           </div>
         </div>
 
         {error && <p className="error-text">{error}</p>}
 
-        <div className="table-wrap invoice-table-wrap">
-          <table className="invoice-table">
+        <div className="table-wrap invoice-list-wrap">
+          <table className="invoice-list-table">
             <thead>
               <tr>
                 <th>Invoice</th>
                 <th>Vendor</th>
                 <th>Status</th>
                 <th>Due</th>
-                <th>Total</th>
-                <th>Actions</th>
+                <th>Amount</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {invoices.length === 0 ? (
                 <tr>
-                  <td className="invoice-empty" colSpan={6}>
-                    No invoices yet. Click Create Invoice to add your first one.
+                  <td className="muted invoice-empty-cell" colSpan={6}>
+                    No invoices match this view yet. Create one to start tracking vendor billing.
                   </td>
                 </tr>
               ) : (
-                invoices.map((invoice) => (
-                  <tr key={invoice._id}>
-                    <td>
-                      <button className="btn ghost" type="button" onClick={() => openInvoice(invoice)}>
-                        {invoice.invoiceNumber}
-                      </button>
-                    </td>
-                    <td>{invoice.vendor}</td>
-                    <td>{invoice.status}</td>
-                    <td>{formatDate(invoice.dueDate)}</td>
-                    <td>{formatCurrency(invoice.totalAmount)}</td>
-                    <td>
-                      <div className="invoice-row-actions">
-                        <button className="btn ghost" type="button" onClick={() => openInvoice(invoice)}>
-                          View
-                        </button>
-                        {invoice.status !== "PAID" && canMarkPaid ? (
-                          <button className="btn" type="button" onClick={() => markPaid(invoice._id)}>
-                            Mark Remaining Paid
+                invoices.map((invoice) => {
+                  const dueTone = getInvoiceDueTone(invoice);
+
+                  return (
+                    <tr key={invoice._id} className={`invoice-row invoice-row-${dueTone}`}>
+                      <td>{invoice.invoiceNumber}</td>
+                      <td>{invoice.vendor}</td>
+                      <td>
+                        <span className={`status-badge status-${invoice.status.toLowerCase()}`}>{invoiceStatusLabels[invoice.status]}</span>
+                      </td>
+                      <td>
+                        <span className={`invoice-due-pill invoice-due-pill-${dueTone}`}>{formatDate(invoice.dueDate)}</span>
+                      </td>
+                      <td>{formatCurrency(invoice.totalAmount)}</td>
+                      <td>
+                        <div className="invoice-actions">
+                          <button className="tool-btn invoice-view-btn" type="button" onClick={() => openInvoice(invoice)} title="Open invoice" aria-label={`Open invoice ${invoice.invoiceNumber}`}>
+                            <ViewIcon />
+                            <span>View Invoice</span>
                           </button>
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -1019,13 +1313,14 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
             setActiveInvoice(null);
             setEditingInvoice(false);
             setSelectedPayIndexes([]);
+            setConfirmPayInvoice(false);
           }}
         >
           <div className="expense-widget-panel invoice-detail-modal panel" onClick={(event) => event.stopPropagation()}>
             <div className="expense-widget-header">
               <h3>Invoice {activeInvoice.invoiceNumber}</h3>
               <div className="inline-form wrap">
-                {!editingInvoice && activeInvoice.status === "UNPAID" && (
+                {!editingInvoice && activeInvoice.status !== "PAID" && (
                   <button className="btn ghost" type="button" onClick={() => setEditingInvoice(true)}>
                     Edit Invoice
                   </button>
@@ -1037,6 +1332,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                     setActiveInvoice(null);
                     setEditingInvoice(false);
                     setSelectedPayIndexes([]);
+                    setConfirmPayInvoice(false);
                   }}
                 >
                   Close
@@ -1046,25 +1342,51 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
 
             {editingInvoice && invoiceDraft ? (
               <div className="form-grid">
+                <div className="readonly-field">
+                  <span className="readonly-field-label">Vendor</span>
+                  <strong>{invoiceDraft.vendor}</strong>
+                </div>
+                <div className="readonly-field">
+                  <span className="readonly-field-label">Invoice Number</span>
+                  <strong>{invoiceDraft.invoiceNumber}</strong>
+                </div>
+                <div className="readonly-field">
+                  <span className="readonly-field-label">Issue Date</span>
+                  <strong>{formatDate(invoiceDraft.issueDate)}</strong>
+                </div>
+                <div className="readonly-field">
+                  <span className="readonly-field-label">Due Date</span>
+                  <strong>{formatDate(invoiceDraft.dueDate)}</strong>
+                </div>
+                <div className="readonly-field">
+                  <span className="readonly-field-label">Currency</span>
+                  <strong>{invoiceDraft.currency ?? "USD"}</strong>
+                </div>
                 <label>
-                  Vendor
-                  <input value={invoiceDraft.vendor} onChange={(event) => setInvoiceDraft((current) => current ? { ...current, vendor: event.target.value } : current)} />
+                  Phase
+                  <select value={invoiceDraft.phaseTaskId ?? ""} onChange={(event) => applyScopeToDraft(event.target.value)}>
+                    <option value="">{phaseNodes.length > 0 ? "Select phase" : "No phases yet"}</option>
+                    {phaseNodes.map((phase) => (
+                      <option key={phase._id} value={phase._id}>
+                        {phase.title}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label>
-                  Invoice Number
-                  <input value={invoiceDraft.invoiceNumber} onChange={(event) => setInvoiceDraft((current) => current ? { ...current, invoiceNumber: event.target.value } : current)} />
-                </label>
-                <label>
-                  Issue Date
-                  <input type="date" value={invoiceDraft.issueDate?.slice(0, 10) ?? ""} onChange={(event) => setInvoiceDraft((current) => current ? { ...current, issueDate: event.target.value } : current)} />
-                </label>
-                <label>
-                  Due Date
-                  <input type="date" value={invoiceDraft.dueDate} onChange={(event) => setInvoiceDraft((current) => current ? { ...current, dueDate: event.target.value } : current)} />
-                </label>
-                <label>
-                  Currency
-                  <input value={invoiceDraft.currency ?? "USD"} maxLength={3} onChange={(event) => setInvoiceDraft((current) => current ? { ...current, currency: event.target.value.toUpperCase() } : current)} />
+                  Section
+                  <select
+                    value={invoiceDraft.sectionTaskId ?? ""}
+                    onChange={(event) => applyScopeToDraft(invoiceDraft.phaseTaskId ?? "", event.target.value)}
+                    disabled={!invoiceDraft.phaseTaskId || draftSections.length === 0}
+                  >
+                    <option value="">{draftSections.length > 0 ? "No section" : "No sections"}</option>
+                    {draftSections.map((section) => (
+                      <option key={section._id} value={section._id}>
+                        {section.title}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label>
                   Notes
@@ -1073,7 +1395,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
               </div>
             ) : (
               <p className="muted">
-                Vendor: {activeInvoice.vendor} | Status: {activeInvoice.status} | Due: {formatDate(activeInvoice.dueDate)} | Total: {formatCurrency(activeInvoice.totalAmount)}
+                Vendor: {activeInvoice.vendor} | Scope: {buildScopeLabel(activeInvoice.phase, activeInvoice.section)} | Status: {activeInvoice.status} | Due: {formatDate(activeInvoice.dueDate)} | Total: {formatCurrency(activeInvoice.totalAmount)}
               </p>
             )}
 
@@ -1088,8 +1410,8 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                     {!editingInvoice && <th>Unit</th>}
                     <th>Qty</th>
                     <th>Unit Price</th>
-                    <th>Amount</th>
-                    <th>Not Paid</th>
+                    <th>{editingInvoice ? "Total" : "Amount"}</th>
+                    {editingInvoice && <th>Journal Only</th>}
                     {!editingInvoice && <th>Status</th>}
                     {editingInvoice && <th></th>}
                   </tr>
@@ -1100,7 +1422,11 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                     const isMaterialCategory = isMaterialsCategory(currentCategory);
                     const isLinePaid = Boolean(item.paid);
                     const isLineNotPaid = Boolean(item.recordOnly);
-                    const isSelectable = !isLinePaid && !isLineNotPaid;
+                    const isSelectable = !isLinePaid;
+                    const rowMaterialName = resolveMaterialName(item.description, item.category).toLowerCase();
+                    const matchedPreset = materialPresets.find((preset) => preset.name.toLowerCase() === rowMaterialName);
+                    const isPresetMaterial = Boolean(matchedPreset) && isMaterialCategory;
+                    const isLockedPaidRow = editingInvoice && isLinePaid;
 
                     return (
                       <tr key={`detail-item-${index}`}>
@@ -1122,7 +1448,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
 
                         <td>
                           {editingInvoice ? (
-                            <input value={item.description} onChange={(event) => updateInvoiceDraftItem(index, { description: event.target.value })} />
+                            <input disabled={isLockedPaidRow} value={item.description} onChange={(event) => updateInvoiceDraftItem(index, { description: event.target.value })} />
                           ) : (
                             item.description
                           )}
@@ -1131,7 +1457,8 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                         <td>
                           {editingInvoice ? (
                             <select
-                              value={isMaterialsCategory(item.category) ? "Materials" : item.category}
+                              disabled={isLockedPaidRow}
+                              value={isMaterialsCategory(item.category) ? "Materials" : normalizeInvoiceCategory(item.category)}
                               onChange={(event) => {
                                 const nextCategory = event.target.value;
                                 if (nextCategory === "Materials") {
@@ -1150,7 +1477,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                               ))}
                             </select>
                           ) : (
-                            item.category
+                            normalizeInvoiceCategory(item.category)
                           )}
                         </td>
 
@@ -1158,6 +1485,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                           {isMaterialCategory ? (
                             editingInvoice ? (
                               <select
+                                disabled={isLockedPaidRow}
                                 value={item.materialLabel ?? ""}
                                 onChange={(event) =>
                                   updateInvoiceDraftItem(index, {
@@ -1184,33 +1512,63 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
 
                         <td>
                           {editingInvoice ? (
-                            <input type="number" min={0} step="1" value={item.quantity} onChange={(event) => updateInvoiceDraftItem(index, { quantity: parseWholeNumber(event.target.value) })} />
+                            <input disabled={isLockedPaidRow} type="number" min={0} step="1" value={item.quantity} onChange={(event) => updateInvoiceDraftItem(index, { quantity: parseWholeNumber(event.target.value) })} />
                           ) : (
                             item.quantity.toLocaleString()
                           )}
                         </td>
 
-                        <td>{formatCurrency(item.unitPrice)}</td>
-
-                        <td>{formatCurrency(item.amount)}</td>
+                        <td>
+                          {editingInvoice ? (
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={item.unitPrice}
+                              disabled={isPresetMaterial || isLockedPaidRow}
+                              title={isLockedPaidRow ? "Paid rows are locked." : isPresetMaterial ? "Price comes from the selected material preset." : undefined}
+                              onChange={(event) => updateInvoiceDraftItem(index, { unitPrice: Number(event.target.value) })}
+                            />
+                          ) : (
+                            formatCurrency(item.unitPrice)
+                          )}
+                        </td>
 
                         <td>
                           {editingInvoice ? (
                             <input
-                              type="checkbox"
-                              checked={isLineNotPaid}
-                              onChange={(event) => updateInvoiceDraftItem(index, { recordOnly: event.target.checked })}
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={item.amount}
+                              disabled={isPresetMaterial || isLockedPaidRow}
+                              title={isLockedPaidRow ? "Paid rows are locked." : isPresetMaterial ? "Amount is locked to the selected material preset pricing." : undefined}
+                              onChange={(event) => {
+                                const nextAmount = Number(event.target.value);
+                                updateInvoiceDraftItem(index, {
+                                  amount: nextAmount,
+                                  unitPrice: item.quantity > 0 ? Number((nextAmount / item.quantity).toFixed(2)) : item.unitPrice
+                                });
+                              }}
                             />
-                          ) : isLineNotPaid ? (
-                            "Yes"
                           ) : (
-                            "No"
+                            formatCurrency(item.amount)
                           )}
                         </td>
 
-                        {!editingInvoice && (
-                          <td>{isLineNotPaid ? "Not Paid" : isLinePaid ? "Paid" : "Unpaid"}</td>
+                        {editingInvoice && (
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.recordOnly)}
+                              disabled={isLockedPaidRow}
+                              title={isLockedPaidRow ? "Paid rows are locked." : "Keep this line on the invoice but skip expense/tally creation when paid."}
+                              onChange={(event) => updateInvoiceDraftItem(index, { recordOnly: event.target.checked })}
+                            />
+                          </td>
                         )}
+
+                        {!editingInvoice && <td>{isLinePaid ? "Paid" : isLineNotPaid ? "Journal Only" : "Unpaid"}</td>}
 
                         {editingInvoice && (
                           <td>
@@ -1218,7 +1576,7 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
                               className="btn ghost"
                               type="button"
                               onClick={() => setInvoiceDraft((current) => current ? { ...current, items: current.items.filter((_item, itemIndex) => itemIndex !== index) } : current)}
-                              disabled={(invoiceDraft?.items.length ?? 0) <= 1}
+                              disabled={(invoiceDraft?.items.length ?? 0) <= 1 || isLockedPaidRow || activeInvoice.status === "PARTIALLY_PAID"}
                             >
                               Remove
                             </button>
@@ -1232,38 +1590,73 @@ export function InvoiceCenter({ expenses, canMarkPaid, onInvoicePaid }: InvoiceC
             </div>
 
             {editingInvoice && invoiceDraft ? (
-              <div className="inline-form wrap">
-                <button className="btn ghost" type="button" onClick={() => setInvoiceDraft((current) => current ? { ...current, items: [...current.items, createEmptyItem()] } : current)}>
-                  Add Item
-                </button>
-                <strong>{formatCurrency(invoiceDraftTotal)}</strong>
-                <button className="btn" type="button" onClick={() => saveInvoiceEdit()} disabled={savingInvoiceEdit}>
-                  {savingInvoiceEdit ? "Saving..." : "Save Invoice"}
-                </button>
-                <button className="btn ghost" type="button" onClick={() => { setEditingInvoice(false); setInvoiceDraft(toInvoiceInput(activeInvoice)); }}>
-                  Cancel
-                </button>
+              <div className="invoice-modal-footer">
+                <div className="invoice-modal-footer-meta">
+                  <button
+                    className="btn ghost"
+                    type="button"
+                    disabled={activeInvoice.status === "PARTIALLY_PAID"}
+                    onClick={() => setInvoiceDraft((current) => current ? { ...current, items: [...current.items, createEmptyItem()] } : current)}
+                  >
+                    Add Item
+                  </button>
+                  <strong>{formatCurrency(invoiceDraftTotal)}</strong>
+                </div>
+                <div className="invoice-modal-footer-actions">
+                  <button className="btn ghost" type="button" onClick={() => { setEditingInvoice(false); setInvoiceDraft(toInvoiceInput(activeInvoice)); }}>
+                    Cancel
+                  </button>
+                  <button className="btn" type="button" onClick={() => saveInvoiceEdit()} disabled={savingInvoiceEdit}>
+                    {savingInvoiceEdit ? "Saving..." : "Save Invoice"}
+                  </button>
+                </div>
               </div>
             ) : (
               canMarkPaid && activeInvoice.status !== "PAID" && (
-                <div className="inline-form wrap">
-                  <button
-                    className="btn"
-                    type="button"
-                    disabled={selectedPayIndexes.length === 0}
-                    onClick={() => markPaid(activeInvoice._id, selectedPayIndexes)}
-                  >
-                    Mark Selected Paid
-                  </button>
-                  <button className="btn ghost" type="button" onClick={() => markPaid(activeInvoice._id)}>
-                    Mark All Remaining
-                  </button>
+                <div className="invoice-modal-footer">
+                  <div className="invoice-modal-footer-actions">
+                    {selectedPayIndexes.length > 0 ? (
+                      <button className="btn" type="button" onClick={() => markPaid(activeInvoice._id, selectedPayIndexes)}>
+                        Mark Selected Paid
+                      </button>
+                    ) : (
+                      <button className="btn success" type="button" onClick={() => setConfirmPayInvoice(true)}>
+                        Pay Invoice
+                      </button>
+                    )}
+                  </div>
                 </div>
               )
             )}
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmPayInvoice && Boolean(activeInvoice)}
+        title="Pay Invoice?"
+        message={
+          activeInvoice
+            ? `This will mark all remaining unpaid items on invoice ${activeInvoice.invoiceNumber} as paid.`
+            : ""
+        }
+        confirmLabel="Pay Invoice"
+        cancelLabel="Cancel"
+        busyLabel="Paying..."
+        busy={payingInvoice}
+        onCancel={() => {
+          if (!payingInvoice) {
+            setConfirmPayInvoice(false);
+          }
+        }}
+        onConfirm={async () => {
+          if (!activeInvoice) {
+            return;
+          }
+
+          await markPaid(activeInvoice._id);
+        }}
+      />
     </section>
   );
 }

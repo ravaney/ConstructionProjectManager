@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Expense, ExpenseInput, ExpenseTallyDetails, WorkerProfile, WorkerRole } from "../types/models";
+import type { Expense, ExpenseInput, ExpenseTallyDetails, Task, WorkerProfile, WorkerRole } from "../types/models";
 import { api } from "../utils/api";
 import { formatCurrency, formatDate } from "../utils/format";
+import { buildScopeLabel, getCurrentPhase, getCurrentSection, getPhaseNodes, getSectionsForPhase } from "../utils/workBreakdown";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   isMaterialsCategory,
@@ -15,6 +16,7 @@ import {
 
 type ExpenseSectionProps = {
   expenses: Expense[];
+  tasks: Task[];
   canDeleteExpense: boolean;
   onAddExpense: (payload: ExpenseInput) => Promise<void>;
   onUpdateExpense: (id: string, payload: Partial<ExpenseInput>) => Promise<void>;
@@ -75,14 +77,17 @@ const defaultForm: ExpenseInput = {
   quantity: 0,
   date: new Date().toISOString().slice(0, 10),
   vendor: "",
-  phase: "Phase 1",
+  phase: "",
+  phaseTaskId: "",
+  section: "",
+  sectionTaskId: "",
   notes: "",
   workerRole: "OTHER"
 };
 
 const expenseCategories = [
   "Materials",
-  "Labor Cost",
+  "Labour Cost",
   "Subcontractor Services",
   "Equipment Rental",
   "Permits & Fees",
@@ -141,6 +146,28 @@ function getMaterialSubcategory(category?: string): string {
 function isVendorDrivenCategory(category?: string): boolean {
   const normalized = (category ?? "").trim().toLowerCase();
   return isMaterialsCategory(category) || normalized.includes("equipment rental");
+}
+
+function normalizeExpenseCategory(category?: string): string {
+  const normalized = (category ?? "").trim();
+  if (normalized === "Labor Cost") {
+    return "Labour Cost";
+  }
+
+  if (normalized.startsWith("Labor Cost /")) {
+    return normalized.replace("Labor Cost /", "Labour Cost /").trim();
+  }
+
+  return normalized;
+}
+
+function isLaborCategory(category?: string): boolean {
+  const normalized = (category ?? "").trim().toLowerCase();
+  return normalized.includes("labor") || normalized.includes("labour");
+}
+
+function formatExpenseCategoryDisplay(category: string): string {
+  return normalizeExpenseCategory(category);
 }
 
 function ExpenseTypeIcon({ type }: { type: ExpenseVisual["type"] }) {
@@ -318,6 +345,7 @@ function getExpenseVisual(category: string, name: string): ExpenseVisual {
 
 export function ExpenseSection({
   expenses,
+  tasks,
   canDeleteExpense,
   onAddExpense,
   onUpdateExpense,
@@ -345,9 +373,13 @@ export function ExpenseSection({
   const [detailData, setDetailData] = useState<ExpenseTallyDetails | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const phaseNodes = useMemo(() => getPhaseNodes(tasks), [tasks]);
+  const currentPhase = useMemo(() => getCurrentPhase(tasks), [tasks]);
+  const formSections = useMemo(() => getSectionsForPhase(tasks, form.phaseTaskId), [tasks, form.phaseTaskId]);
+  const editSections = useMemo(() => getSectionsForPhase(tasks, editForm?.phaseTaskId), [tasks, editForm?.phaseTaskId]);
 
   const categories = useMemo(() => {
-    return Array.from(new Set(expenses.map((expense) => expense.category))).sort();
+    return Array.from(new Set(expenses.map((expense) => normalizeExpenseCategory(expense.category)))).sort();
   }, [expenses]);
 
   const categoryOptions = useMemo(() => {
@@ -355,13 +387,13 @@ export function ExpenseSection({
   }, [categories]);
 
   const baseCategoryOptions = useMemo(() => {
-    return Array.from(new Set(categoryOptions.map((value) => (isMaterialsCategory(value) ? "Materials" : value)))).sort();
+    return Array.from(new Set(categoryOptions.map((value) => (isMaterialsCategory(value) ? "Materials" : normalizeExpenseCategory(value))))).sort();
   }, [categoryOptions]);
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter((expense) => {
       const matchesSearch = expense.name.toLowerCase().includes(search.toLowerCase());
-      const matchesCategory = category === "All" || expense.category === category;
+      const matchesCategory = category === "All" || normalizeExpenseCategory(expense.category) === category;
       return matchesSearch && matchesCategory;
     });
   }, [expenses, search, category]);
@@ -389,6 +421,14 @@ export function ExpenseSection({
     const qty = Number(quantity ?? 0);
     const price = Number(unitPrice ?? 0);
     return qty > 0 && price >= 0 ? Number((qty * price).toFixed(2)) : 0;
+  }
+
+  function findPhaseIdByName(phaseName?: string): string {
+    return phaseNodes.find((phase) => phase.title === (phaseName ?? "").trim())?._id ?? "";
+  }
+
+  function findSectionIdByName(phaseId?: string, sectionName?: string): string {
+    return getSectionsForPhase(tasks, phaseId).find((section) => section.title === (sectionName ?? "").trim())?._id ?? "";
   }
 
   async function loadWorkers() {
@@ -441,6 +481,32 @@ export function ExpenseSection({
   }, [showAddWidget]);
 
   useEffect(() => {
+    if (!phaseNodes.length) {
+      return;
+    }
+
+    setForm((current) => {
+      if (current.phaseTaskId) {
+        return current;
+      }
+
+      const nextPhase = currentPhase ?? phaseNodes[0];
+      if (!nextPhase) {
+        return current;
+      }
+
+      const nextSection = getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0];
+      return {
+        ...current,
+        phase: nextPhase.title,
+        phaseTaskId: nextPhase._id,
+        section: nextSection?.title ?? "",
+        sectionTaskId: nextSection?._id ?? ""
+      };
+    });
+  }, [currentPhase, phaseNodes, tasks]);
+
+  useEffect(() => {
     try {
       const raw = localStorage.getItem(expenseColumnSettingsKey);
       if (!raw) {
@@ -462,6 +528,32 @@ export function ExpenseSection({
     localStorage.setItem(expenseColumnSettingsKey, JSON.stringify(optionalColumns));
   }, [optionalColumns]);
 
+  function applyScopeToForm(phaseId: string, sectionId?: string) {
+    const phaseNode = phaseNodes.find((task) => task._id === phaseId);
+    const sectionNode = getSectionsForPhase(tasks, phaseId).find((task) => task._id === sectionId);
+
+    setForm((current) => ({
+      ...current,
+      phaseTaskId: phaseNode?._id ?? "",
+      phase: phaseNode?.title ?? "",
+      sectionTaskId: sectionNode?._id ?? "",
+      section: sectionNode?.title ?? ""
+    }));
+  }
+
+  function applyScopeToEditForm(phaseId: string, sectionId?: string) {
+    const phaseNode = phaseNodes.find((task) => task._id === phaseId);
+    const sectionNode = getSectionsForPhase(tasks, phaseId).find((task) => task._id === sectionId);
+
+    setEditForm((current) => ({
+      ...(current ?? {}),
+      phaseTaskId: phaseNode?._id ?? "",
+      phase: phaseNode?.title ?? "",
+      sectionTaskId: sectionNode?._id ?? "",
+      section: sectionNode?.title ?? ""
+    }));
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
@@ -469,7 +561,7 @@ export function ExpenseSection({
     try {
       const categoryValue = isMaterialsCategory(form.category)
         ? buildMaterialsCategory(materialSubcategory || getMaterialSubcategory(form.category))
-        : (form.category ?? "");
+        : normalizeExpenseCategory(form.category);
       const calculatedAmount = computeAmount(form.quantity, form.unitPrice);
       const payload: ExpenseInput = {
         ...form,
@@ -481,7 +573,15 @@ export function ExpenseSection({
       };
 
       await onAddExpense(payload);
-      setForm(defaultForm);
+      const nextPhase = currentPhase ?? phaseNodes[0];
+      const nextSection = nextPhase ? getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0] : undefined;
+      setForm({
+        ...defaultForm,
+        phase: nextPhase?.title ?? "",
+        phaseTaskId: nextPhase?._id ?? "",
+        section: nextSection?.title ?? "",
+        sectionTaskId: nextSection?._id ?? ""
+      });
       setMaterialSubcategory("");
       setShowAddWidget(false);
     } finally {
@@ -493,7 +593,7 @@ export function ExpenseSection({
     setEditingId(expense._id);
     setEditForm({
       name: expense.name,
-      category: expense.category,
+      category: normalizeExpenseCategory(expense.category),
       amount: expense.amount,
       quantity: expense.quantity,
       unitPrice: expense.unitPrice,
@@ -501,6 +601,11 @@ export function ExpenseSection({
       date: expense.date.slice(0, 10),
       vendor: expense.vendor,
       phase: expense.phase,
+      phaseTaskId: expense.phaseTaskId ?? findPhaseIdByName(expense.phase),
+      section: expense.section ?? "",
+      sectionTaskId:
+        expense.sectionTaskId ??
+        findSectionIdByName(expense.phaseTaskId ?? findPhaseIdByName(expense.phase), expense.section),
       notes: expense.notes,
       workerRole: normalizeWorkerRole(expense.workerRole),
       workerProfileId: expense.workerProfileId
@@ -618,7 +723,7 @@ export function ExpenseSection({
           <span><ExpenseTypeIcon type="steel" /> Steel</span>
         </div>
 
-        <div className="inline-form wrap">
+        <div className="inline-form wrap expense-filter-row">
           <input
             placeholder="Search by item"
             value={search}
@@ -658,32 +763,61 @@ export function ExpenseSection({
                 const visual = getExpenseVisual(expense.category, expense.name);
                 const workerName = workers.find((worker) => worker._id === expense.workerProfileId)?.name;
                 const editingCategoryValue = editForm?.category ?? expense.category;
-                const editingBaseCategory = isMaterialsCategory(editingCategoryValue) ? "Materials" : editingCategoryValue;
+                const editingBaseCategory = isMaterialsCategory(editingCategoryValue) ? "Materials" : normalizeExpenseCategory(editingCategoryValue);
                 const editingMaterialSubcategory = getMaterialSubcategory(editingCategoryValue);
                 const isVendorExpense = isVendorDrivenCategory(expense.category);
                 const isMaterialExpense = isMaterialsCategory(expense.category);
+                const isEditingLaborExpense = isLaborCategory(editingCategoryValue);
                 const effectiveVendor = ((isEditing ? editForm?.vendor : expense.vendor) ?? "").trim();
 
                 return (
                   <tr key={expense._id}>
                     <td>
                       {isEditing ? (
-                        <input
-                          value={editForm?.name ?? ""}
-                          onChange={(event) =>
-                            setEditForm((current) => ({
-                              ...(current ?? {}),
-                              name: event.target.value,
-                              amount: current?.amount ?? expense.amount,
-                              category: current?.category ?? expense.category
-                            }))
-                          }
-                        />
+                        <div className="stack-sm">
+                          <input
+                            value={editForm?.name ?? ""}
+                            onChange={(event) =>
+                              setEditForm((current) => ({
+                                ...(current ?? {}),
+                                name: event.target.value,
+                                amount: current?.amount ?? expense.amount,
+                                category: current?.category ?? expense.category
+                              }))
+                            }
+                          />
+                          <div className="scope-edit-grid">
+                            <select
+                              value={editForm?.phaseTaskId ?? ""}
+                              onChange={(event) => applyScopeToEditForm(event.target.value)}
+                            >
+                              <option value="">Select phase</option>
+                              {phaseNodes.map((phase) => (
+                                <option key={phase._id} value={phase._id}>
+                                  {phase.title}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={editForm?.sectionTaskId ?? ""}
+                              onChange={(event) => applyScopeToEditForm(editForm?.phaseTaskId ?? "", event.target.value)}
+                              disabled={!editForm?.phaseTaskId || editSections.length === 0}
+                            >
+                              <option value="">{editSections.length > 0 ? "No section" : "No sections"}</option>
+                              {editSections.map((section) => (
+                                <option key={section._id} value={section._id}>
+                                  {section.title}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
                       ) : (
                         <div className="expense-title-cell">
                           <span className="expense-icon-wrap"><ExpenseTypeIcon type={visual.type} /></span>
                           <div className="expense-title-text">
                             <strong>{expense.name}</strong>
+                            <span className="muted small-text">{buildScopeLabel(expense.phase, expense.section)}</span>
                             <span className="muted small-text">{visual.label}</span>
                           </div>
                         </div>
@@ -739,7 +873,7 @@ export function ExpenseSection({
                       ) : (
                         <span className="expense-category-pill">
                           <ExpenseTypeIcon type={visual.type} />
-                          <span>{expense.category}</span>
+                          <span>{formatExpenseCategoryDisplay(expense.category)}</span>
                         </span>
                       )}
                     </td>
@@ -825,6 +959,44 @@ export function ExpenseSection({
                               }))
                             }
                           />
+                        ) : isEditingLaborExpense ? (
+                          <div className="stack-sm">
+                            <select
+                              value={editForm?.workerRole ?? "OTHER"}
+                              onChange={(event) =>
+                                setEditForm((current) => ({
+                                  ...(current ?? {}),
+                                  workerRole: event.target.value as WorkerRole
+                                }))
+                              }
+                            >
+                              {workerRoles.map((role) => (
+                                <option key={role} value={role}>
+                                  {formatWorkerRole(role)}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={editForm?.workerProfileId ?? ""}
+                              onChange={(event) => {
+                                const profileId = event.target.value;
+                                const selectedWorker = workers.find((worker) => worker._id === profileId);
+
+                                setEditForm((current) => ({
+                                  ...(current ?? {}),
+                                  workerProfileId: profileId || undefined,
+                                  workerRole: normalizeWorkerRole(selectedWorker?.role ?? current?.workerRole ?? expense.workerRole)
+                                }));
+                              }}
+                            >
+                              <option value="">None selected</option>
+                              {workers.map((worker) => (
+                                <option key={worker._id} value={worker._id}>
+                                  {worker.name} ({formatWorkerRole(worker.role)})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         ) : (
                           <select
                             value={editForm?.workerRole ?? "OTHER"}
@@ -845,9 +1017,10 @@ export function ExpenseSection({
                       ) : isVendorExpense ? (
                         <span className="muted">{effectiveVendor || "-"}</span>
                       ) : (
-                        <span className="muted">
-                          {workerName ? `${workerName} (${formatWorkerRole(expense.workerRole)})` : formatWorkerRole(expense.workerRole)}
-                        </span>
+                        <div className="expense-assignee">
+                          <strong>{formatWorkerRole(expense.workerRole)}</strong>
+                          <span className="muted small-text">{workerName || "-"}</span>
+                        </div>
                       )}
                     </td>
                     <td>
@@ -1146,6 +1319,34 @@ export function ExpenseSection({
                   value={form.vendor ?? ""}
                   onChange={(event) => setForm((current) => ({ ...current, vendor: event.target.value }))}
                 />
+              </label>
+
+              <label>
+                Phase
+                <select value={form.phaseTaskId ?? ""} onChange={(event) => applyScopeToForm(event.target.value)}>
+                  <option value="">{phaseNodes.length > 0 ? "Select phase" : "No phases yet"}</option>
+                  {phaseNodes.map((phase) => (
+                    <option key={phase._id} value={phase._id}>
+                      {phase.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Section
+                <select
+                  value={form.sectionTaskId ?? ""}
+                  onChange={(event) => applyScopeToForm(form.phaseTaskId ?? "", event.target.value)}
+                  disabled={!form.phaseTaskId || formSections.length === 0}
+                >
+                  <option value="">{formSections.length > 0 ? "No section" : "No sections"}</option>
+                  {formSections.map((section) => (
+                    <option key={section._id} value={section._id}>
+                      {section.title}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label>

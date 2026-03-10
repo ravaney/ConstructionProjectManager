@@ -88,6 +88,7 @@ a:hover {
 .app-shell {
   width: 100%;
   min-height: 100vh;
+  box-sizing: border-box;
 }
 
 .layout-grid {
@@ -290,10 +291,12 @@ a:hover {
 }
 
 .kpi-card {
-  background: var(--panel-soft);
-  border: 1px solid var(--line);
-  padding: 0.7rem 0.8rem;
+  padding: 0.78rem 0.84rem;
   border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  display: grid;
+  gap: 0.15rem;
 }
 
 .kpi-card p {
@@ -303,8 +306,48 @@ a:hover {
 }
 
 .kpi-card h3 {
-  margin-top: 0.25rem;
   font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.kpi-card-budget {
+  background: linear-gradient(140deg, #f4f9ff 0%, #edf6ff 100%);
+  border-color: #d4e6fb;
+}
+
+.kpi-card-spent {
+  background: linear-gradient(140deg, #fff1f1 0%, #ffe8e8 100%);
+  border-color: #f1c5c5;
+}
+
+.kpi-card-committed {
+  background: linear-gradient(140deg, #eef5ff 0%, #e5f0ff 100%);
+  border-color: #c9dcfb;
+}
+
+.kpi-card-remaining {
+  background: linear-gradient(140deg, #effaf2 0%, #e6f7ec 100%);
+  border-color: #bfe3cd;
+}
+
+.kpi-card-cash {
+  background: linear-gradient(140deg, #f1fbf6 0%, #e7f8ef 100%);
+  border-color: #c5e7d3;
+}
+
+.kpi-card-invoices {
+  background: linear-gradient(140deg, #fff8ed 0%, #fff2df 100%);
+  border-color: #efd6aa;
+}
+
+.kpi-card-burn {
+  background: linear-gradient(140deg, #fff6ec 0%, #ffefdf 100%);
+  border-color: #efcfab;
+}
+
+.kpi-card-tasks {
+  background: linear-gradient(140deg, #f7f4ff 0%, #f0e9ff 100%);
+  border-color: #dbd0fb;
 }
 
 .content,
@@ -370,100 +413,120 @@ a:hover {
   flex-wrap: wrap;
 }
 
-.invoice-page {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  align-items: stretch;
-}
-
-.invoice-page .panel {
-  padding: 0.72rem 0.76rem;
-  box-shadow: 0 6px 14px rgba(18, 65, 124, 0.08);
-}
-
-.invoice-list-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  align-content: flex-start;
-  gap: 0.55rem;
-}
-
-.invoice-list-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-
-.invoice-list-meta {
+.invoice-hero {
   display: grid;
-  gap: 0.12rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.85rem;
+  padding: 1rem 1.1rem;
+  background:
+    radial-gradient(circle at top right, rgba(29, 140, 248, 0.16), transparent 34%),
+    linear-gradient(135deg, #ffffff 0%, #f2f8ff 62%, #edf6ff 100%);
+  overflow: hidden;
+  position: relative;
 }
 
-.invoice-list-meta .muted {
-  font-size: 0.76rem;
+.invoice-hero::after {
+  content: "";
+  position: absolute;
+  inset: auto -6% -36% auto;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(14, 115, 214, 0.12), transparent 68%);
+  pointer-events: none;
 }
 
-.invoice-list-actions {
+.invoice-hero-copy,
+.invoice-section-copy {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+}
+
+.invoice-hero-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.invoice-hero-actions {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-left: auto;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  align-items: end;
+  margin-top: 0.3rem;
 }
 
-.invoice-list-actions .btn {
-  padding: 0.42rem 0.66rem;
+.invoice-filter-control {
+  min-width: 210px;
+  gap: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line-strong);
+  background: #f4f9ff;
 }
 
-.invoice-list-actions select,
-.invoice-list-actions .btn {
-  min-height: 2.15rem;
+.invoice-filter-control span {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #4a6a93;
 }
 
-.invoice-list-actions select {
-  min-width: 200px;
+.invoice-filter-control select {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-weight: 700;
+  color: #163b66;
 }
 
-.invoice-table-wrap {
-  border: 1px solid #d6e8fc;
-  background: #fff;
+.invoice-filter-control select:focus {
+  outline: none;
 }
 
-.invoice-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: #f7fbff;
-  box-shadow: inset 0 -1px 0 #d8eafb;
+.invoice-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  position: relative;
+  z-index: 1;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(127, 161, 197, 0.28);
 }
 
-.invoice-table td:last-child {
-  white-space: nowrap;
+.invoice-stat-card {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  min-height: auto;
+  align-content: start;
 }
 
-.invoice-table th,
-.invoice-table td {
-  padding: 0.42rem 0.5rem;
+.invoice-stat-card strong {
+  font-family: "Manrope", "Plus Jakarta Sans", sans-serif;
+  font-size: 1.16rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
 }
 
-.invoice-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: nowrap;
+.invoice-stat-card-accent {
+  background: transparent;
+  border-color: transparent;
 }
 
-.invoice-row-actions .btn {
-  padding: 0.34rem 0.56rem;
+.invoice-stat-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #56779f;
+  font-weight: 700;
 }
 
-.invoice-empty {
-  text-align: center;
-  color: #4f617e;
-  padding: 0.72rem 0.5rem;
+.invoice-stat-meta {
+  color: #496788;
+  font-size: 0.82rem;
 }
 
 .tool-btn {
@@ -486,6 +549,28 @@ a:hover {
 label {
   display: grid;
   gap: 0.33rem;
+  font-size: 0.85rem;
+  color: #35557c;
+  font-weight: 600;
+}
+
+.readonly-field {
+  display: grid;
+  gap: 0.33rem;
+  align-content: start;
+  padding: 0.52rem 0.62rem;
+  border: 1px solid var(--line-strong);
+  background: #f7fbff;
+  min-height: 74px;
+}
+
+.readonly-field strong {
+  font-size: 0.96rem;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.readonly-field-label {
   font-size: 0.85rem;
   color: #35557c;
   font-weight: 600;
@@ -531,6 +616,11 @@ select:focus {
   background: #f0f7ff;
   color: #1f4d83;
   border-color: var(--line-strong);
+}
+
+.btn.success {
+  background: linear-gradient(120deg, #2fa45e, #23824b);
+  color: #ffffff;
 }
 
 .btn.danger {
@@ -600,6 +690,187 @@ select:focus {
   gap: 1rem;
 }
 
+.dashboard-viz-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.dashboard-viz-grid-secondary {
+  align-items: start;
+}
+
+.dashboard-chart-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.dashboard-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.budget-composition-panel {
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f7fbff 100%),
+    radial-gradient(circle at top right, rgba(29, 140, 248, 0.09), transparent 30%);
+}
+
+.budget-stack-bar {
+  display: flex;
+  min-height: 30px;
+  border: 1px solid #cfe1f7;
+  overflow: hidden;
+  background: #eff6ff;
+}
+
+.budget-stack-spent {
+  background: linear-gradient(90deg, #d65353 0%, #ed7777 100%);
+}
+
+.budget-stack-committed {
+  background: linear-gradient(90deg, #2f83d7 0%, #68aaf0 100%);
+}
+
+.budget-stack-unused {
+  background: linear-gradient(90deg, #36a76b 0%, #73cf97 100%);
+}
+
+.budget-stack-legend {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.budget-stack-legend-item {
+  display: flex;
+  align-items: start;
+  gap: 0.55rem;
+}
+
+.budget-stack-legend-item p {
+  margin: 0.12rem 0 0;
+  color: #4d627e;
+}
+
+.budget-dot {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  margin-top: 0.2rem;
+}
+
+.trend-chart-shell {
+  overflow-x: auto;
+}
+
+.trend-chart {
+  width: 100%;
+  min-width: 520px;
+  height: 250px;
+}
+
+.trend-chart text {
+  font-size: 11px;
+  fill: #617790;
+}
+
+.trend-area {
+  fill: rgba(47, 131, 215, 0.14);
+}
+
+.trend-line {
+  fill: none;
+  stroke: #2f83d7;
+  stroke-width: 3;
+}
+
+.trend-point {
+  fill: white;
+  stroke: #2f83d7;
+  stroke-width: 3;
+}
+
+.status-stack-bar {
+  min-height: 26px;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #cedef3;
+  background: #eef4fb;
+}
+
+.status-legend {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.status-legend-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.status-legend-dot {
+  width: 12px;
+  height: 12px;
+}
+
+.phase-performance-grid {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.phase-performance-row {
+  border: 1px solid #d4e3f4;
+  background: #fbfdff;
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.phase-performance-row.is-current {
+  border-color: #1d8cf8;
+  box-shadow: inset 4px 0 0 #1d8cf8;
+}
+
+.phase-performance-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
+}
+
+.phase-performance-head p {
+  margin: 0.18rem 0 0;
+}
+
+.phase-performance-track {
+  display: flex;
+  min-height: 18px;
+  background: #edf4fb;
+  border: 1px solid #d6e3f2;
+  overflow: hidden;
+}
+
+.phase-performance-spent {
+  background: linear-gradient(90deg, #dc6666 0%, #f08d8d 100%);
+}
+
+.phase-performance-committed {
+  background: linear-gradient(90deg, #367ecc 0%, #6ab0f3 100%);
+}
+
+.phase-performance-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  color: #58708b;
+  font-size: 0.82rem;
+}
+
 .bar-row {
   display: grid;
   grid-template-columns: minmax(90px, 0.7fr) 1.4fr minmax(90px, 0.6fr);
@@ -664,6 +935,373 @@ th {
   font-weight: 700;
   line-height: 1;
   cursor: help;
+}
+
+.invoice-table-panel {
+  gap: 0.95rem;
+}
+
+.invoice-table-header {
+  align-items: end;
+}
+
+.invoice-list-wrap {
+  border: 1px solid #d7e8fb;
+  background: linear-gradient(180deg, #fbfdff 0%, #f4f9ff 100%);
+}
+
+.invoice-list-table {
+  min-width: 980px;
+}
+
+.invoice-list-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(247, 251, 255, 0.96);
+  box-shadow: inset 0 -1px 0 #d8eafb;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.invoice-list-table tbody tr {
+  background: rgba(255, 255, 255, 0.88);
+  transition: background 140ms ease;
+}
+
+.invoice-list-table tbody tr:hover {
+  background: #f6fbff;
+}
+
+.invoice-row-overdue td:first-child {
+  box-shadow: inset 3px 0 0 #dd5f5f;
+}
+
+.invoice-row-soon td:first-child {
+  box-shadow: inset 3px 0 0 #f4ab3d;
+}
+
+.invoice-row-paid td:first-child {
+  box-shadow: inset 3px 0 0 #33a26d;
+}
+
+.invoice-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.invoice-view-btn {
+  white-space: nowrap;
+}
+
+.invoice-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  padding-top: 0.85rem;
+  border-top: 1px solid #e4f0fc;
+}
+
+.invoice-modal-footer-meta,
+.invoice-modal-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.invoice-modal-footer-actions {
+  margin-left: auto;
+}
+
+.status-badge,
+.invoice-due-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.26rem 0.54rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.status-badge {
+  text-transform: uppercase;
+}
+
+.status-unpaid {
+  background: #fff3e8;
+  color: #a14a10;
+  border: 1px solid #f4ccaa;
+}
+
+.status-partially_paid {
+  background: #eef6ff;
+  color: #185a9a;
+  border: 1px solid #c8def7;
+}
+
+.status-paid {
+  background: #eaf8ef;
+  color: #21734a;
+  border: 1px solid #bfe2cd;
+}
+
+.invoice-due-pill-overdue {
+  background: #fff0f0;
+  color: #9f3434;
+  border: 1px solid #efc2c2;
+}
+
+.invoice-due-pill-soon {
+  background: #fff7e9;
+  color: #8e5b10;
+  border: 1px solid #f0d39d;
+}
+
+.invoice-due-pill-scheduled {
+  background: #eef6ff;
+  color: #245f9c;
+  border: 1px solid #cadef7;
+}
+
+.invoice-due-pill-paid {
+  background: #edf9f2;
+  color: #2a7b51;
+  border: 1px solid #c5e5d2;
+}
+
+.invoice-actions .icon-btn {
+  margin-inline: auto;
+}
+
+.invoice-empty-cell {
+  padding: 1rem;
+}
+
+.task-planner-shell {
+  gap: 1rem;
+}
+
+.task-planner-hero {
+  display: grid;
+  gap: 1rem;
+  background: linear-gradient(135deg, #f6f8fb 0%, #eef5ff 100%);
+}
+
+.task-planner-stats {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.task-planner-stats article {
+  border: 1px solid #cadef7;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.task-planner-stats span,
+.task-node-metrics span,
+.task-progress-row span {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #5f7494;
+}
+
+.task-planner-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.task-create-panel {
+  position: sticky;
+  top: 0.75rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.task-create-head {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #bfd6f1;
+  background: #f5f9ff;
+}
+
+.segmented-control button {
+  border: 0;
+  padding: 0.55rem 0.7rem;
+  background: transparent;
+  color: #36557b;
+  font-weight: 700;
+}
+
+.segmented-control button.active {
+  background: var(--brand);
+  color: white;
+}
+
+.task-tree-column {
+  display: grid;
+  gap: 1rem;
+}
+
+.task-node {
+  border: 1px solid var(--line);
+  background: white;
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.phase-node {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.section-node {
+  background: #fdfefe;
+}
+
+.task-node.is-current {
+  border-color: #1d8cf8;
+  box-shadow: inset 4px 0 0 #1d8cf8;
+}
+
+.task-node-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
+.task-node-header h3,
+.task-node-header h4 {
+  margin: 0.1rem 0;
+}
+
+.task-node-header-side {
+  display: grid;
+  gap: 0.55rem;
+  justify-items: end;
+}
+
+.task-node-header-actions,
+.task-leaf-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.task-node-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.task-node-metrics div {
+  border: 1px solid #d7e4f6;
+  background: #f7faff;
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.task-progress-row {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.task-progress-meter {
+  height: 8px;
+  background: #e4edf8;
+  overflow: hidden;
+}
+
+.task-progress-meter span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #1d8cf8 0%, #54b6ff 100%);
+}
+
+.task-section-stack,
+.task-leaf-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.task-leaf {
+  border: 1px solid #dce8f6;
+  background: #fbfdff;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.task-leaf.is-complete {
+  background: #f2fbf5;
+  border-color: #cfe7d7;
+}
+
+.task-leaf-badges {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.task-leaf-meta {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: #5f6f83;
+  font-size: 0.84rem;
+}
+
+.task-attachment-strip {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.task-edit-grid {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-edit-wide {
+  grid-column: 1 / -1;
+}
+
+.scope-edit-grid {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.file-label.compact {
+  border: 1px dashed #bfd6f1;
+  padding: 0.5rem 0.65rem;
+  color: #36557b;
+  cursor: pointer;
+}
+
+.file-label.compact input {
+  display: none;
 }
 
 .board-grid {
@@ -755,7 +1393,26 @@ th {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .dashboard-viz-grid,
+  .budget-stack-legend,
+  .phase-performance-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .task-planner-stats,
+  .task-node-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .invoice-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .invoice-hero-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -786,13 +1443,52 @@ th {
   .metrics-grid,
   .board-grid,
   .form-grid,
-  .two-col {
+  .two-col,
+  .dashboard-viz-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-planner-layout,
+  .task-planner-stats,
+  .task-node-metrics,
+  .task-edit-grid,
+  .scope-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-node-header,
+  .task-node-header-side,
+  .task-node-header-actions,
+  .task-leaf-actions {
+    justify-items: stretch;
+    justify-content: stretch;
+  }
+
+  .dashboard-chart-head,
+  .phase-performance-head,
+  .phase-performance-meta,
+  .budget-stack-legend {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .invoice-hero-stats {
     grid-template-columns: 1fr;
   }
 
   .inline-form {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .expense-filter-row {
+    margin-left: 0;
+  }
+
+  .expense-filter-row input,
+  .expense-filter-row select {
+    width: 100%;
+    flex: 1 1 auto;
   }
 
   .bar-row {
@@ -824,6 +1520,21 @@ th {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.expense-filter-row {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.expense-filter-row input {
+  flex: 0 1 320px;
+  width: 320px;
+}
+
+.expense-filter-row select {
+  flex: 0 0 220px;
+  width: 220px;
 }
 
 .expense-column-settings {
@@ -875,6 +1586,10 @@ th {
   gap: 0.15rem;
 }
 
+.expense-title-text .small-text + .small-text {
+  color: #7b8aa1;
+}
+
 .expense-category-pill {
   display: inline-flex;
   align-items: center;
@@ -883,6 +1598,20 @@ th {
   background: #f2f8ff;
   padding: 0.25rem 0.4rem;
   font-size: 0.78rem;
+}
+
+.expense-assignee {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.expense-assignee strong {
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+
+.scope-edit-grid select {
+  min-width: 0;
 }
 
 
@@ -908,6 +1637,19 @@ th {
 .invoice-create-modal.panel,
 .invoice-detail-modal.panel {
   padding: 0.72rem 0.76rem;
+}
+
+.invoice-detail-modal.panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+}
+
+.invoice-detail-modal .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .invoice-create-modal .form-grid {
@@ -996,20 +1738,1588 @@ th {
     width: 100%;
   }
 
-  .invoice-list-actions {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .invoice-list-actions > * {
-    width: 100%;
-  }
-
   .invoice-create-modal .form-grid {
     grid-template-columns: 1fr;
   }
 
-  .invoice-row-actions {
-    flex-wrap: wrap;
+  .invoice-hero-actions {
+    align-items: stretch;
   }
+
+  .invoice-filter-control {
+    width: 100%;
+  }
+
+  .invoice-view-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .invoice-modal-footer {
+    align-items: stretch;
+  }
+
+  .invoice-modal-footer-meta,
+  .invoice-modal-footer-actions {
+    width: 100%;
+  }
+
+  .invoice-modal-footer-actions {
+    margin-left: 0;
+    justify-content: stretch;
+  }
+
+  .invoice-modal-footer-actions .btn {
+    width: 100%;
+  }
+}
+
+:root {
+  --ink: #5f4c6f;
+  --bg: #eadfdc;
+  --panel: #fffaf8;
+  --panel-soft: #f8f0f4;
+  --accent: #e57179;
+  --accent-deep: #7b5c8b;
+  --line: #dbc9d3;
+  --line-strong: #cbb7c4;
+  --muted: #7f7086;
+  --shadow: 0 16px 34px rgba(116, 87, 112, 0.12);
+}
+
+body {
+  background:
+    linear-gradient(180deg, #6d577d 0, #6d577d 180px, #ecdccf 180px, #f0e4da 100%);
+}
+
+.app-shell.ribbon-shell {
+  background: transparent;
+}
+
+.app-ribbon {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding: 0;
+}
+
+.ribbon-utility-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.72rem 1rem;
+  background: #514d52;
+  color: #fff7fb;
+  border-radius: 0;
+  box-shadow: 0 10px 24px rgba(45, 34, 48, 0.18);
+}
+
+.ribbon-utility-brand,
+.ribbon-utility-actions,
+.ribbon-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.ribbon-utility-brand strong,
+.ribbon-brand-pill strong {
+  display: block;
+}
+
+.ribbon-utility-brand span,
+.ribbon-brand-pill span {
+  font-size: 0.8rem;
+  color: rgba(255, 247, 251, 0.82);
+}
+
+.ribbon-app-badge,
+.ribbon-icon-btn {
+  width: 2.3rem;
+  height: 2.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff8fc;
+}
+
+.ribbon-icon-btn {
+  cursor: pointer;
+}
+
+.ribbon-account-btn {
+  border: 0;
+  padding: 0.55rem 0.85rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff7fb;
+  cursor: pointer;
+}
+
+.ribbon-tab-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1rem 0;
+  background: linear-gradient(90deg, #7f658e 0%, #ce7e88 55%, #efb28a 100%);
+  border-radius: 0;
+  box-shadow: 0 18px 32px rgba(95, 71, 92, 0.18);
+}
+
+.ribbon-brand-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.65rem 0.85rem;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 0;
+  color: #fffafc;
+  min-width: 245px;
+}
+
+.ribbon-brand-logo {
+  width: 46px;
+  height: 46px;
+  border-radius: 18px;
+  background: #fffaf6;
+  color: #df7b71;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+
+.ribbon-tab-groups {
+  display: flex;
+  align-items: end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ribbon-tab-group {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.ribbon-tab-group-secondary {
+  padding-left: 0.85rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.ribbon-tab {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 248, 251, 0.92);
+  padding: 0.9rem 1rem;
+  border-radius: 0;
+  cursor: pointer;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ribbon-tab.active {
+  background: #f8eef5;
+  color: #705685;
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.main-column.ribbon-main-column {
+  width: min(100%, 1680px);
+  margin: 0 auto;
+  padding: 1rem clamp(1.1rem, 1.8vw, 1.75rem) 1.4rem;
+}
+
+.panel {
+  background: linear-gradient(180deg, #fffaf8 0%, #fff5f2 100%);
+  border: 1px solid #ddc8d3;
+  border-radius: 26px;
+  box-shadow: var(--shadow);
+}
+
+.dashboard-head.ribbon-page-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  background: linear-gradient(180deg, #fbf3f8 0%, #fff8f5 100%);
+}
+
+.dashboard-title {
+  gap: 0.35rem;
+}
+
+.ribbon-page-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 1.25rem;
+}
+
+.ribbon-page-meta div {
+  display: grid;
+  gap: 0.1rem;
+  text-align: right;
+}
+
+.ribbon-page-meta span {
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a06d79;
+}
+
+.ribbon-page-meta strong {
+  color: #6c547e;
+}
+
+.kpi-card {
+  border-radius: 22px;
+  padding: 0.9rem 1rem;
+  border-color: #dbcad3;
+}
+
+.kpi-card-budget {
+  background: linear-gradient(135deg, #fbf3ff 0%, #f5edf9 100%);
+}
+
+.kpi-card-spent {
+  background: linear-gradient(135deg, #fdecee 0%, #fee9e3 100%);
+}
+
+.kpi-card-committed {
+  background: linear-gradient(135deg, #f7edf8 0%, #f2e5f1 100%);
+}
+
+.kpi-card-remaining,
+.kpi-card-cash {
+  background: linear-gradient(135deg, #fcf3ec 0%, #fff7f0 100%);
+}
+
+.kpi-card-invoices {
+  background: linear-gradient(135deg, #fdf1e8 0%, #fff6ef 100%);
+}
+
+.kpi-card-burn {
+  background: linear-gradient(135deg, #fceff3 0%, #fff5f1 100%);
+}
+
+.kpi-card-tasks {
+  background: linear-gradient(135deg, #f5edf7 0%, #f9f3fa 100%);
+}
+
+.btn {
+  background: linear-gradient(120deg, #e07178, #c66176);
+  border-radius: 18px;
+}
+
+.btn.ghost,
+.tool-btn,
+.invoice-filter-control,
+.expense-column-settings,
+.icon-legend span {
+  background: #fcf4f6;
+  color: #735c83;
+  border-color: #d8c3cf;
+  border-radius: 18px;
+}
+
+input,
+select {
+  border-radius: 16px;
+  border-color: #d8c1cb;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+table {
+  border-spacing: 0;
+}
+
+th,
+td {
+  border-bottom-color: #ead9df;
+}
+
+.expense-log-table thead th,
+.invoice-list-table thead th {
+  background: #fdf5f7;
+}
+
+.invoice-list-wrap {
+  border-radius: 24px;
+  border-color: #e2d0d8;
+  background: linear-gradient(180deg, #fff8fa 0%, #fff4f0 100%);
+}
+
+.status-badge,
+.invoice-due-pill,
+.pill,
+.expense-category-pill {
+  border-radius: 999px;
+}
+
+.budget-dashboard-sheet {
+  gap: 1.2rem;
+}
+
+.budget-sheet-strip {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 1rem;
+  align-items: center;
+  background: linear-gradient(180deg, #f9eef5 0%, #fff7f3 100%);
+}
+
+.budget-sheet-title {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.budget-sheet-icon {
+  width: 3.3rem;
+  height: 3.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #f39a8a, #df6e7e);
+  color: #fffefc;
+}
+
+.budget-sheet-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+}
+
+.budget-sheet-meta {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+.budget-sheet-meta div {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.budget-sheet-meta span {
+  font-size: 0.76rem;
+  color: #b57380;
+}
+
+.budget-sheet-meta strong {
+  color: #705885;
+}
+
+.budget-sheet-form {
+  display: flex;
+  align-items: end;
+  gap: 0.7rem;
+  justify-self: end;
+}
+
+.budget-sheet-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.budget-sheet-grid-top {
+  grid-template-columns: minmax(260px, 0.85fr) minmax(300px, 0.95fr) minmax(0, 1.45fr);
+}
+
+.budget-sheet-grid-bottom {
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.1fr);
+}
+
+.budget-card {
+  min-height: 100%;
+}
+
+.summary-ring-card,
+.allocation-card,
+.monthly-expense-card,
+.category-table-card,
+.phase-snapshot-card {
+  background: linear-gradient(180deg, #fffdfc 0%, #fff6f5 100%);
+}
+
+.summary-ring-card h3,
+.allocation-card h3,
+.monthly-expense-card h3,
+.category-table-card h3,
+.phase-snapshot-card h3 {
+  color: #6b597e;
+}
+
+.summary-ring-wrap {
+  position: relative;
+  width: min(100%, 260px);
+  margin: 0.5rem auto 0;
+}
+
+.summary-ring {
+  width: 100%;
+  display: block;
+}
+
+.summary-ring-track,
+.summary-ring-value {
+  fill: none;
+  stroke-width: 22;
+}
+
+.summary-ring-track {
+  stroke: #d7cfda;
+}
+
+.summary-ring-value {
+  stroke: #e56e73;
+  transform-origin: 50% 50%;
+  transform: rotate(-90deg);
+}
+
+.summary-ring-copy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 0.2rem;
+  text-align: center;
+}
+
+.summary-ring-copy strong,
+.summary-amount strong {
+  font-size: 1.9rem;
+  color: #e36d72;
+  letter-spacing: -0.03em;
+}
+
+.summary-ring-copy span,
+.allocation-copy span,
+.monthly-expense-head p {
+  color: #857388;
+}
+
+.summary-legend,
+.monthly-chart-legend {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 0.4rem;
+  color: #86768a;
+  font-size: 0.8rem;
+}
+
+.summary-legend span,
+.monthly-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.summary-legend strong {
+  font-size: 0.78rem;
+}
+
+.summary-legend i,
+.monthly-chart-legend i {
+  width: 11px;
+  height: 11px;
+  display: inline-block;
+}
+
+.summary-legend-spent {
+  background: #e56e73;
+}
+
+.summary-legend-remaining {
+  background: #d6cdd9;
+}
+
+.summary-amount {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.summary-amount div {
+  display: grid;
+  gap: 0.18rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.summary-amount span {
+  font-size: 0.8rem;
+  color: #857388;
+}
+
+.summary-sparkline {
+  width: min(100%, 230px);
+  height: 56px;
+}
+
+.summary-sparkline path {
+  fill: none;
+  stroke: #e88b8e;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.allocation-stack {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+.allocation-row {
+  display: grid;
+  grid-template-columns: 2.8rem 1fr;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.allocation-icon {
+  width: 2.8rem;
+  height: 2.8rem;
+  border-radius: 18px;
+  opacity: 0.9;
+}
+
+.allocation-main {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.allocation-bar {
+  height: 14px;
+  border-radius: 999px;
+  background: #d7ceda;
+  overflow: hidden;
+}
+
+.allocation-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.allocation-copy {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.allocation-copy strong {
+  color: #e27275;
+  font-size: 1.55rem;
+  line-height: 1;
+}
+
+.allocation-copy p {
+  color: #6a577d;
+  font-weight: 700;
+}
+
+.monthly-expense-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+}
+
+.monthly-expense-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 0.8rem;
+}
+
+.monthly-expense-metrics div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.monthly-expense-metrics span {
+  font-size: 0.75rem;
+  color: #98757c;
+}
+
+.monthly-expense-metrics strong {
+  color: #735887;
+}
+
+.monthly-chart-shell {
+  overflow-x: auto;
+}
+
+.monthly-chart {
+  width: 100%;
+  min-width: 720px;
+  height: 280px;
+}
+
+.monthly-chart text {
+  font-size: 12px;
+  fill: #786989;
+}
+
+.monthly-bar-budget {
+  fill: #d9d0da;
+}
+
+.monthly-bar-actual {
+  fill: #e47276;
+}
+
+.monthly-chart-line {
+  fill: none;
+  stroke: #7b658d;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.monthly-chart-point {
+  fill: #7b658d;
+}
+
+.monthly-chart-line-dot {
+  background: #7b658d;
+  border-radius: 50%;
+}
+
+.phase-expense-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+}
+
+.phase-expense-meta-stack {
+  display: grid;
+  gap: 0.15rem;
+  justify-items: end;
+  text-align: right;
+}
+
+.phase-expense-scope {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #98757c;
+}
+
+.phase-expense-meta-stack strong {
+  color: #735887;
+  font-size: 1.1rem;
+}
+
+.phase-expense-breadcrumbs {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-top: 0.65rem;
+}
+
+.phase-expense-breadcrumbs button,
+.phase-expense-breadcrumbs span {
+  border: 1px solid #d4e4f6;
+  background: #f7fbff;
+  color: #476689;
+  padding: 0.32rem 0.55rem;
+  font-size: 0.76rem;
+}
+
+.phase-expense-breadcrumbs button {
+  cursor: pointer;
+}
+
+.phase-expense-breadcrumbs button.active,
+.phase-expense-breadcrumbs span {
+  background: #eef5ff;
+  color: #20528b;
+  border-color: #bcd7f7;
+}
+
+.phase-expense-list {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.phase-expense-row {
+  width: 100%;
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  text-align: left;
+  border: 1px solid #d7e4f6;
+  background: #f8fbff;
+}
+
+.phase-expense-row.is-clickable {
+  cursor: pointer;
+}
+
+.phase-expense-row.is-clickable:hover {
+  background: #f3f8ff;
+  border-color: #c5d9f1;
+}
+
+.phase-expense-row.is-current {
+  box-shadow: inset 4px 0 0 #1d8cf8;
+}
+
+.phase-expense-row.is-planned {
+  background: #f4f6fa;
+  border-color: #d8e0ea;
+}
+
+.phase-expense-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.85rem;
+  align-items: start;
+  flex-wrap: wrap;
+}
+
+.phase-expense-row-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.phase-expense-row-copy strong {
+  color: #223c5c;
+}
+
+.phase-expense-row-copy span,
+.phase-expense-row-meta span {
+  font-size: 0.8rem;
+  color: #72859b;
+}
+
+.phase-expense-row-side {
+  display: grid;
+  gap: 0.18rem;
+  justify-items: end;
+  text-align: right;
+}
+
+.phase-expense-row-side strong {
+  color: #223c5c;
+  font-size: 1rem;
+}
+
+.phase-expense-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.45rem;
+  border: 1px solid #c7d8ea;
+  font-size: 0.71rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.phase-expense-status.is-planned {
+  background: #eef2f6;
+  border-color: #d4dde7;
+  color: #5c6e81;
+}
+
+.phase-expense-status.is-in_progress {
+  background: #eef6ff;
+  border-color: #bfd8f7;
+  color: #245f9d;
+}
+
+.phase-expense-status.is-blocked {
+  background: #fff6e7;
+  border-color: #f3d6a7;
+  color: #94641d;
+}
+
+.phase-expense-status.is-done {
+  background: #edf9f1;
+  border-color: #cae6d4;
+  color: #2d7f4d;
+}
+
+.phase-expense-bar {
+  height: 10px;
+  background: #e3edf8;
+  overflow: hidden;
+}
+
+.phase-expense-bar span {
+  display: block;
+  height: 100%;
+}
+
+.phase-expense-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.9rem;
+}
+
+.card-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.category-table,
+.phase-snapshot-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+}
+
+.category-table-row,
+.phase-snapshot-row {
+  border: 1px solid #ead5dd;
+  background: #fffaf7;
+  border-radius: 18px;
+  padding: 0.75rem 0.85rem;
+}
+
+.category-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.7rem;
+  align-items: center;
+}
+
+.category-table-label {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.category-table-label i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 12px;
+}
+
+.phase-snapshot-row.is-current {
+  border-color: #dc7c7a;
+  box-shadow: inset 4px 0 0 #df7678;
+}
+
+.phase-snapshot-head,
+.phase-snapshot-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.phase-snapshot-bar {
+  margin: 0.5rem 0;
+  height: 12px;
+  background: #ddd3db;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.phase-snapshot-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #e36f72, #c36b7c);
+  border-radius: inherit;
+}
+
+.phase-snapshot-meta,
+.task-status-inline {
+  color: #87778b;
+  font-size: 0.8rem;
+}
+
+.task-status-inline {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.task-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  background: #f7edf3;
+  border: 1px solid #deccd5;
+  border-radius: 999px;
+}
+
+.task-status-pill i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+@media (max-width: 1180px) {
+  .budget-sheet-grid-top,
+  .budget-sheet-grid-bottom,
+  .phase-expense-head,
+  .monthly-expense-head,
+  .monthly-expense-metrics,
+  .budget-sheet-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .budget-sheet-meta,
+  .budget-sheet-form,
+  .ribbon-tab-row {
+    justify-content: start;
+  }
+}
+
+@media (max-width: 960px) {
+  .app-ribbon {
+    padding-inline: 0;
+  }
+
+  .ribbon-utility-bar,
+  .ribbon-tab-row {
+    border-radius: 0;
+  }
+
+  .ribbon-tab-row,
+  .ribbon-tab-groups {
+    align-items: stretch;
+  }
+
+  .ribbon-tab {
+    border-radius: 0;
+  }
+
+  .phase-expense-meta-stack,
+  .phase-expense-row-side {
+    justify-items: start;
+    text-align: left;
+  }
+}
+
+@media (max-width: 860px) {
+  .ribbon-utility-bar,
+  .ribbon-tab-row,
+  .budget-sheet-strip {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .ribbon-tab-group-secondary {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .ribbon-page-meta,
+  .budget-sheet-meta,
+  .budget-sheet-form {
+    justify-content: start;
+  }
+
+  .ribbon-page-meta div {
+    text-align: left;
+  }
+
+  .category-table-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root {
+  --ink: #edf3fb;
+  --bg: #080b10;
+  --panel: #10161d;
+  --panel-soft: #151d27;
+  --accent: #4fb4ff;
+  --accent-deep: #2078d4;
+  --line: #253241;
+  --line-strong: #34495f;
+  --muted: #96aabd;
+  --shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
+}
+
+body {
+  background:
+    linear-gradient(180deg, #05070b 0, #05070b 180px, #0a0f15 180px, #0c1118 100%);
+  color: var(--ink);
+}
+
+a {
+  color: #62c3ff;
+}
+
+.ribbon-utility-bar {
+  background: #171b21;
+  color: #f4f7fb;
+}
+
+.ribbon-utility-brand span,
+.ribbon-brand-pill span {
+  color: rgba(244, 247, 251, 0.74);
+}
+
+.ribbon-app-badge,
+.ribbon-icon-btn,
+.ribbon-account-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #edf3fb;
+}
+
+.ribbon-tab-row {
+  background: linear-gradient(90deg, #151b24 0%, #1d2530 48%, #263241 100%);
+}
+
+.ribbon-brand-pill {
+  background: rgba(255, 255, 255, 0.05);
+  color: #f4f7fb;
+}
+
+.ribbon-brand-logo {
+  background: linear-gradient(135deg, #243244, #1a2431);
+  color: #77cbff;
+}
+
+.ribbon-tab-group-secondary {
+  border-left-color: rgba(255, 255, 255, 0.12);
+}
+
+.ribbon-tab {
+  color: rgba(240, 245, 251, 0.78);
+}
+
+.ribbon-tab.active {
+  background: #111821;
+  color: #f5f8fc;
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.panel,
+.sidebar-card,
+.budget-card,
+.invoice-list-wrap,
+.task-node,
+.task-leaf,
+.metric-card,
+.alert-card,
+.readonly-field,
+.attachment-row,
+.expense-category-pill,
+.invoice-filter-control,
+.tool-btn,
+.expense-column-settings,
+.icon-legend span,
+.task-status-pill {
+  background: linear-gradient(180deg, #111820 0%, #0e141b 100%);
+  border-color: #253241;
+  box-shadow: var(--shadow);
+}
+
+.dashboard-head.ribbon-page-head,
+.budget-sheet-strip,
+.invoice-hero,
+.task-planner-hero {
+  background:
+    radial-gradient(circle at top right, rgba(79, 180, 255, 0.12), transparent 22%),
+    linear-gradient(180deg, #131a23 0%, #0f151c 100%);
+  border-color: #2c3b4d;
+}
+
+.budget-sheet-icon {
+  background: linear-gradient(135deg, #2e91e7, #1b66b9);
+  color: #f9fcff;
+}
+
+.ribbon-page-meta span,
+.budget-sheet-meta span,
+.monthly-expense-metrics span,
+.usage-stat span,
+.invoice-stat-label,
+.metric-label,
+.eyebrow,
+.sidebar-section-title {
+  color: #7dcfff;
+}
+
+.ribbon-page-meta strong,
+.budget-sheet-meta strong,
+.dashboard-title h1,
+.dashboard-title h2,
+.summary-ring-card h3,
+.allocation-card h3,
+.monthly-expense-card h3,
+.category-table-card h3,
+.phase-snapshot-card h3,
+h2,
+h3 {
+  color: #edf3fb;
+}
+
+.muted,
+.small-text,
+label,
+.budget-sheet-meta,
+.summary-ring-copy span,
+.summary-amount span,
+.allocation-copy span,
+.monthly-expense-head p,
+.phase-expense-head p,
+.phase-expense-scope,
+.phase-expense-row-copy span,
+.phase-expense-row-meta span,
+.phase-snapshot-meta,
+.task-leaf-meta,
+.expense-title-text .small-text + .small-text,
+.invoice-stat-meta,
+.readonly-field-label {
+  color: #96aabd;
+}
+
+.kpi-card {
+  background: linear-gradient(180deg, #151d27 0%, #10161d 100%);
+  border-color: #2a394a;
+}
+
+.kpi-card-budget,
+.kpi-card-spent,
+.kpi-card-committed,
+.kpi-card-remaining,
+.kpi-card-cash,
+.kpi-card-invoices,
+.kpi-card-burn,
+.kpi-card-tasks {
+  background: linear-gradient(180deg, #151d27 0%, #10161d 100%);
+}
+
+.kpi-card p,
+.kpi-card h3 {
+  color: #edf3fb;
+}
+
+.btn {
+  background: linear-gradient(120deg, #2390ea, #1f6fcc);
+  color: #f8fbff;
+}
+
+.btn.ghost,
+.tool-btn,
+.invoice-filter-control,
+.expense-column-settings,
+.icon-legend span {
+  background: #161f29;
+  color: #d9e7f6;
+  border-color: #304152;
+}
+
+input,
+select,
+textarea {
+  background: rgba(18, 25, 33, 0.96);
+  color: #edf3fb;
+  border-color: #314355;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #7990a7;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid rgba(79, 180, 255, 0.18);
+  border-color: #4fb4ff;
+}
+
+th,
+td {
+  border-bottom-color: #202c39;
+}
+
+.expense-log-table thead th,
+.invoice-list-table thead th {
+  background: #131a22;
+  color: #d6e5f5;
+  box-shadow: inset 0 -1px 0 #233140;
+}
+
+.invoice-list-wrap {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.invoice-list-table th,
+.invoice-list-table td {
+  border-left: 0;
+  border-right: 0;
+}
+
+.invoice-list-table tbody tr,
+.category-table-row,
+.phase-snapshot-row {
+  background: #121922;
+  border-color: #233140;
+}
+
+.invoice-list-table tbody tr:hover,
+.phase-snapshot-row.is-current,
+.task-node.is-current {
+  background: #17212d;
+}
+
+.status-badge,
+.invoice-due-pill,
+.pill,
+.expense-category-pill {
+  background: #18212c;
+  border-color: #304153;
+  color: #dce8f4;
+}
+
+.status-unpaid {
+  color: #ffcb82;
+}
+
+.status-partially_paid {
+  color: #7ecbff;
+}
+
+.status-paid,
+.status-done {
+  color: #8bd7a5;
+}
+
+.invoice-due-pill-overdue {
+  background: #2b1518;
+  border-color: #553238;
+  color: #ff9a9a;
+}
+
+.invoice-due-pill-soon {
+  background: #2f2414;
+  border-color: #5b4730;
+  color: #ffd089;
+}
+
+.invoice-due-pill-scheduled,
+.invoice-due-pill-paid {
+  background: #18222d;
+  border-color: #33495f;
+  color: #86cfff;
+}
+
+.summary-ring-track {
+  stroke: #293544;
+}
+
+.summary-ring-value,
+.summary-legend-spent,
+.allocation-copy strong,
+.summary-legend strong,
+.summary-ring-copy strong,
+.summary-amount strong {
+  stroke: #4fb4ff;
+  color: #4fb4ff;
+}
+
+.phase-expense-meta-stack strong,
+.phase-expense-row-copy strong,
+.phase-expense-row-side strong {
+  color: #edf3fb;
+}
+
+.summary-legend-remaining {
+  background: #2b3746;
+}
+
+.summary-sparkline path {
+  stroke: #4fb4ff;
+}
+
+.allocation-bar {
+  background: #273240;
+}
+
+.phase-expense-breadcrumbs button {
+  background: #141d27;
+  border-color: #304152;
+  color: #dce8f4;
+}
+
+.phase-expense-breadcrumbs button.active,
+.phase-expense-breadcrumbs span {
+  background: #17354f;
+  border-color: #386792;
+  color: #7ecfff;
+}
+
+.phase-expense-row {
+  background: #121922;
+  border-color: #233140;
+}
+
+.phase-expense-row.is-clickable:hover {
+  background: #17212d;
+  border-color: #304152;
+}
+
+.phase-expense-row.is-planned {
+  background: #10161d;
+  border-color: #2a3745;
+}
+
+.phase-expense-status.is-planned {
+  background: #17202a;
+  border-color: #334556;
+  color: #a7b6c6;
+}
+
+.phase-expense-status.is-in_progress {
+  background: #132131;
+  border-color: #36506b;
+  color: #87d0ff;
+}
+
+.phase-expense-status.is-blocked {
+  background: #2f2414;
+  border-color: #5b4730;
+  color: #ffd089;
+}
+
+.phase-expense-status.is-done {
+  background: #12231f;
+  border-color: #315249;
+  color: #9ed8b0;
+}
+
+.phase-expense-bar {
+  background: #273240;
+}
+
+.allocation-copy p,
+.category-table-row strong,
+.phase-snapshot-head strong,
+.task-status-pill strong {
+  color: #edf3fb;
+}
+
+.monthly-bar-budget {
+  fill: #2a3545;
+}
+
+.monthly-bar-actual {
+  fill: #4fb4ff;
+}
+
+.monthly-chart-line,
+.monthly-chart-point,
+.monthly-chart-line-dot {
+  stroke: #90b8ff;
+  fill: #90b8ff;
+  background: #90b8ff;
+}
+
+.monthly-chart text,
+.trend-chart text {
+  fill: #93a8bf;
+}
+
+.category-table-label span,
+.phase-snapshot-meta span,
+.task-status-pill span {
+  color: #9db0c4;
+}
+
+.icon-btn {
+  background: #161e28;
+}
+
+.icon-btn.view {
+  border-color: #36506b;
+  background: #132131;
+  color: #87d0ff;
+}
+
+.icon-btn.edit {
+  border-color: #315249;
+  background: #12231f;
+  color: #9ed8b0;
+}
+
+.icon-btn.delete {
+  border-color: #5c3438;
+  background: #251417;
+  color: #ffabb2;
+}
+
+.expense-icon-wrap {
+  background: #16202b;
+  border-color: #31465c;
+  color: #7ecfff;
+}
+
+.expense-category-pill {
+  background: #141d27;
+  border-color: #31465c;
+  color: #dfeaf5;
+}
+
+.modal-backdrop {
+  background: rgba(5, 8, 12, 0.74);
+}
+
+.confirm-dialog-icon {
+  background: #261417;
+  border-color: #61373c;
+  color: #ffafb6;
+}
+
+.dashboard-head.ribbon-page-head .kpi-grid {
+  grid-column: 1 / -1;
+  gap: 1rem 1.15rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #233242;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  gap: 0.22rem;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card p {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8ea6bf;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card h3 {
+  font-size: 1.16rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.dashboard-head.ribbon-page-head .kpi-value-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.dashboard-head.ribbon-page-head .kpi-edit-btn {
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #31465c;
+  background: #14202b;
+  color: #7ecfff;
+  cursor: pointer;
+}
+
+.dashboard-head.ribbon-page-head .kpi-edit-btn svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.dashboard-head.ribbon-page-head .kpi-budget-editor {
+  display: block;
+  max-width: 220px;
+}
+
+.dashboard-head.ribbon-page-head .kpi-budget-field {
+  position: relative;
+}
+
+.dashboard-head.ribbon-page-head .kpi-budget-editor-actions {
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  display: inline-flex;
+  gap: 0.28rem;
+  transform: translateY(-50%);
+}
+
+.dashboard-head.ribbon-page-head .kpi-budget-editor input {
+  padding-block: 0.4rem;
+  padding-right: 4rem;
+  font-size: 0.96rem;
+  font-weight: 700;
+}
+
+.dashboard-head.ribbon-page-head .kpi-inline-icon {
+  width: 1.55rem;
+  height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #31465c;
+  background: transparent;
+  color: #dce8f4;
+  padding: 0;
+  cursor: pointer;
+}
+
+.dashboard-head.ribbon-page-head .kpi-inline-icon svg {
+  width: 0.88rem;
+  height: 0.88rem;
+}
+
+.dashboard-head.ribbon-page-head .kpi-inline-icon.primary {
+  background: #17354f;
+  color: #7ecfff;
+  border-color: #386792;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-budget h3 {
+  color: #7ecfff;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-spent h3 {
+  color: #ff9b9f;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-committed h3 {
+  color: #78b9ff;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-remaining h3,
+.dashboard-head.ribbon-page-head .kpi-card-cash h3 {
+  color: #8bd7a5;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-invoices h3 {
+  color: #f1c36d;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-burn h3 {
+  color: #ffb36a;
+}
+
+.dashboard-head.ribbon-page-head .kpi-card-tasks h3 {
+  color: #c9a4ff;
 }

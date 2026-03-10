@@ -29,6 +29,12 @@ const invoiceSchema = new Schema(
     invoiceNumber: { type: String, required: true, trim: true },
     issueDate: { type: Date, required: true, default: Date.now },
     dueDate: { type: Date, required: true },
+    phase: { type: String, default: "Phase 1", trim: true },
+    phaseTaskId: { type: Schema.Types.ObjectId, ref: "Task" },
+    section: { type: String, default: "", trim: true },
+    sectionTaskId: { type: Schema.Types.ObjectId, ref: "Task" },
+    subsection: { type: String, default: "", trim: true },
+    subsectionTaskId: { type: Schema.Types.ObjectId, ref: "Task" },
     status: {
       type: String,
       enum: ["UNPAID", "PARTIALLY_PAID", "PAID"],

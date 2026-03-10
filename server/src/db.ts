@@ -8,6 +8,8 @@ export async function connectDatabase(): Promise<void> {
     return;
   }
 
-  await mongoose.connect(env.MONGODB_URI);
+  await mongoose.connect(env.MONGODB_URI, {
+    dbName: env.MONGODB_DB_NAME
+  });
   isConnected = true;
 }

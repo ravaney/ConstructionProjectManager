@@ -15,7 +15,7 @@ const upload = multer({
 });
 
 const querySchema = z.object({
-  entityType: z.enum(["expense", "task"]),
+  entityType: z.enum(["expense", "task", "project"]),
   entityId: z.string().optional()
 });
 
@@ -38,7 +38,7 @@ router.get("/", async (req, res, next) => {
 router.post("/upload", requireRole("OWNER", "CONTRACTOR"), upload.single("file"), async (req, res, next) => {
   try {
     const bodySchema = z.object({
-      entityType: z.enum(["expense", "task"]),
+      entityType: z.enum(["expense", "task", "project"]),
       entityId: z.string().min(1)
     });
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireRole } from "../middleware/auth.js";
 import { ExpenseModel } from "../models/Expense.js";
 import { InvoiceModel } from "../models/Invoice.js";
+import { resolveTaskScope, syncTaskHierarchyState } from "../utils/taskHierarchy.js";
 
 const router = Router();
 
@@ -18,6 +19,9 @@ const expensePayloadSchema = z.object({
   date: z.string().optional(),
   vendor: z.string().optional(),
   phase: z.string().optional(),
+  phaseTaskId: z.string().optional(),
+  section: z.string().optional(),
+  sectionTaskId: z.string().optional(),
   unit: z.string().optional(),
   unitPrice: z.coerce.number().min(0).optional(),
   quantity: z.coerce.number().min(0).optional(),
@@ -66,6 +70,22 @@ function toMoney(value: number): number {
   return Number(value.toFixed(2));
 }
 
+function toIdString(value: unknown): string {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object" && value !== null && "toString" in value) {
+    return value.toString();
+  }
+
+  return "";
+}
+
 function resolveAmount(quantity: number, unitPrice: number, amount: number): number {
   if (quantity > 0 && unitPrice > 0) {
     return toMoney(quantity * unitPrice);
@@ -76,6 +96,7 @@ function resolveAmount(quantity: number, unitPrice: number, amount: number): num
 
 router.get("/", async (req, res, next) => {
   try {
+    await syncTaskHierarchyState();
     const { category, phase, search, from, to, workerRole } = querySchema.parse(req.query);
     const filters: Record<string, unknown> = {};
 
@@ -153,10 +174,6 @@ router.get("/:id/tally-details", async (req, res, next) => {
 
     for (const invoice of invoices) {
       for (const item of invoice.items) {
-        if (!item.paid || item.recordOnly) {
-          continue;
-        }
-
         const itemCategory = item.category ?? "";
         const shouldTrackToTally = Boolean(item.trackToTally) || isMaterialsCategory(itemCategory);
         if (!shouldTrackToTally) {
@@ -172,6 +189,10 @@ router.get("/:id/tally-details", async (req, res, next) => {
         const itemUnitKey = itemUnit.toLowerCase();
         const unitMatches = !expenseUnitKey || !itemUnitKey || expenseUnitKey === itemUnitKey;
         if (!unitMatches) {
+          continue;
+        }
+
+        if (!item.paid || item.recordOnly) {
           continue;
         }
 
@@ -234,11 +255,15 @@ router.get("/:id/tally-details", async (req, res, next) => {
 router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
     const payload = expensePayloadSchema.parse(req.body);
+    const scope = await resolveTaskScope(payload);
     const expense = await ExpenseModel.create({
       ...payload,
       date: payload.date ? new Date(payload.date) : new Date(),
       vendor: payload.vendor ?? "",
-      phase: payload.phase ?? "Phase 1",
+      phase: scope.phase,
+      phaseTaskId: scope.phaseTaskId,
+      section: scope.section,
+      sectionTaskId: scope.sectionTaskId,
       unit: payload.unit ?? "",
       unitPrice: payload.unitPrice ?? 0,
       quantity: payload.quantity ?? 0,
@@ -263,20 +288,27 @@ router.post("/bulk", requireRole("OWNER"), async (req, res, next) => {
 
     const payload = bulkSchema.parse(req.body);
 
-    const docs = payload.expenses.map((expense) => ({
-      ...expense,
-      date: expense.date ? new Date(expense.date) : new Date(),
-      vendor: expense.vendor ?? "",
-      phase: expense.phase ?? "Phase 1",
-      unit: expense.unit ?? "",
-      unitPrice: expense.unitPrice ?? 0,
-      quantity: expense.quantity ?? 0,
-      notes: expense.notes ?? "",
-      source: expense.source ?? "csv-import",
-      workerRole: expense.workerRole ?? "OTHER",
-      invoiceNumber: expense.invoiceNumber ?? "",
-      createdBy: req.user?.id
-    }));
+    const docs = [];
+    for (const expense of payload.expenses) {
+      const scope = await resolveTaskScope(expense);
+      docs.push({
+        ...expense,
+        date: expense.date ? new Date(expense.date) : new Date(),
+        vendor: expense.vendor ?? "",
+        phase: scope.phase,
+        phaseTaskId: scope.phaseTaskId,
+        section: scope.section,
+        sectionTaskId: scope.sectionTaskId,
+        unit: expense.unit ?? "",
+        unitPrice: expense.unitPrice ?? 0,
+        quantity: expense.quantity ?? 0,
+        notes: expense.notes ?? "",
+        source: expense.source ?? "csv-import",
+        workerRole: expense.workerRole ?? "OTHER",
+        invoiceNumber: expense.invoiceNumber ?? "",
+        createdBy: req.user?.id
+      });
+    }
 
     const inserted = await ExpenseModel.insertMany(docs);
     res.status(201).json({ insertedCount: inserted.length });
@@ -289,19 +321,32 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
   try {
     const payload = expenseUpdateSchema.parse(req.body);
     const updatePayload: Record<string, unknown> = { ...payload };
+    const existingExpense = await ExpenseModel.findById(req.params.id);
+
+    if (!existingExpense) {
+      res.status(404).json({ message: "Expense not found" });
+      return;
+    }
+
+    const scope = await resolveTaskScope({
+      phaseTaskId: payload.phaseTaskId ?? toIdString(existingExpense.phaseTaskId),
+      sectionTaskId: payload.sectionTaskId ?? toIdString(existingExpense.sectionTaskId),
+      phase: payload.phase ?? existingExpense.phase,
+      section: payload.section ?? existingExpense.section
+    });
 
     if (payload.date) {
       updatePayload.date = new Date(payload.date);
     }
 
+    updatePayload.phase = scope.phase;
+    updatePayload.phaseTaskId = scope.phaseTaskId;
+    updatePayload.section = scope.section;
+    updatePayload.sectionTaskId = scope.sectionTaskId;
+
     const expense = await ExpenseModel.findByIdAndUpdate(req.params.id, updatePayload, {
       new: true
     });
-
-    if (!expense) {
-      res.status(404).json({ message: "Expense not found" });
-      return;
-    }
 
     res.json({ expense });
   } catch (error) {
