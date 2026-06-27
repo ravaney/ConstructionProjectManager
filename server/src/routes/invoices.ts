@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { requireRole } from "../middleware/auth.js";
 import { ExpenseModel } from "../models/Expense.js";
 import { InvoiceModel } from "../models/Invoice.js";
+import { getJmdRateQuote } from "../services/exchangeRates.js";
+import { buildChangedFields, buildInvoiceSnapshot, recordHistoryEvent } from "../services/history.js";
 import { resolveTaskScope, syncTaskHierarchyState } from "../utils/taskHierarchy.js";
 
 const router = Router();
@@ -25,7 +28,26 @@ const invoiceItemSchema = z.object({
   recordOnly: z.boolean().optional()
 });
 
+const maxInvoiceNumber = 99999;
+const invoiceNumberPattern = /^\d{1,5}$/;
+
 const createInvoiceSchema = z.object({
+  vendor: z.string().min(1),
+  invoiceNumber: z.string().trim().optional().default(""),
+  issueDate: z.string().optional(),
+  dueDate: z.string(),
+  phase: z.string().optional(),
+  phaseTaskId: z.string().optional(),
+  section: z.string().optional(),
+  sectionTaskId: z.string().optional(),
+  subsection: z.string().optional(),
+  subsectionTaskId: z.string().optional(),
+  currency: z.string().min(3).max(3).optional(),
+  notes: z.string().optional(),
+  items: z.array(invoiceItemSchema).min(1)
+});
+
+const updateInvoiceSchema = z.object({
   vendor: z.string().min(1),
   invoiceNumber: z.string().min(1),
   issueDate: z.string().optional(),
@@ -34,12 +56,12 @@ const createInvoiceSchema = z.object({
   phaseTaskId: z.string().optional(),
   section: z.string().optional(),
   sectionTaskId: z.string().optional(),
+  subsection: z.string().optional(),
+  subsectionTaskId: z.string().optional(),
   currency: z.string().min(3).max(3).optional(),
   notes: z.string().optional(),
   items: z.array(invoiceItemSchema).min(1)
 });
-
-const updateInvoiceSchema = createInvoiceSchema;
 
 const listQuerySchema = z.object({
   status: z.enum(["UNPAID", "PARTIALLY_PAID", "PAID", "ALL"]).optional()
@@ -51,6 +73,45 @@ function isMaterialsCategory(category: string): boolean {
 
 function toMoney(value: number): number {
   return Number(value.toFixed(2));
+}
+
+function formatInvoiceNumber(value: number): string {
+  return String(value).padStart(5, "0");
+}
+
+function normalizeInvoiceNumber(value?: string): string {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (!invoiceNumberPattern.test(trimmed)) {
+    throw new Error("Invoice numbers must be numeric and at most 5 digits");
+  }
+
+  return formatInvoiceNumber(Number(trimmed));
+}
+
+async function getNextInvoiceNumber(): Promise<string> {
+  const numericInvoices = await InvoiceModel.find(
+    { invoiceNumber: { $regex: invoiceNumberPattern.source } },
+    { invoiceNumber: 1 }
+  ).lean();
+
+  let highestInvoiceNumber = 0;
+  for (const invoice of numericInvoices) {
+    const parsedNumber = Number(invoice.invoiceNumber);
+    if (Number.isFinite(parsedNumber)) {
+      highestInvoiceNumber = Math.max(highestInvoiceNumber, parsedNumber);
+    }
+  }
+
+  const nextInvoiceNumber = highestInvoiceNumber + 1;
+  if (nextInvoiceNumber > maxInvoiceNumber) {
+    throw new Error("Maximum 5-digit invoice number limit reached");
+  }
+
+  return formatInvoiceNumber(nextInvoiceNumber);
 }
 
 function toIdString(value: unknown): string {
@@ -69,6 +130,62 @@ function toIdString(value: unknown): string {
   return "";
 }
 
+function normalizeInvoiceCurrency(value?: string): string {
+  const normalized = (value ?? "USD").trim().toUpperCase();
+  return normalized.length === 3 ? normalized : "USD";
+}
+
+async function resolveInvoiceCurrencyContext(input: {
+  currency?: string;
+  issueDate?: string;
+}): Promise<{
+  entryCurrency: string;
+  storedCurrency: string;
+  usdToEntryRate: number;
+  exchangeRateDate: string;
+}> {
+  const entryCurrency = normalizeInvoiceCurrency(input.currency);
+  const issueDate = input.issueDate ? new Date(input.issueDate) : new Date();
+  const fallbackDate = Number.isNaN(issueDate.getTime()) ? new Date() : issueDate;
+
+  if (entryCurrency !== "JMD") {
+    return {
+      entryCurrency,
+      storedCurrency: entryCurrency,
+      usdToEntryRate: 1,
+      exchangeRateDate: fallbackDate.toISOString().slice(0, 10)
+    };
+  }
+
+  const quote = await getJmdRateQuote({
+    currency: "USD",
+    date: fallbackDate
+  });
+
+  if (!quote || !Number.isFinite(quote.rate) || quote.rate <= 0) {
+    throw new Error("Could not load the JMD exchange rate for the invoice date");
+  }
+
+  return {
+    entryCurrency,
+    storedCurrency: "USD",
+    usdToEntryRate: quote.rate,
+    exchangeRateDate: quote.rateDate
+  };
+}
+
+function convertInvoiceEntryValue(value: number, context: { entryCurrency: string; usdToEntryRate: number }): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  if (context.entryCurrency === "JMD") {
+    return toMoney(value / context.usdToEntryRate);
+  }
+
+  return toMoney(value);
+}
+
 function resolveInvoiceItemAmount(item: { quantity?: number; unitPrice?: number; amount?: number }): number {
   const quantity = Number(item.quantity ?? 0);
   const unitPrice = Number(item.unitPrice ?? 0);
@@ -83,10 +200,18 @@ function resolveInvoiceItemAmount(item: { quantity?: number; unitPrice?: number;
 
 type ParsedInvoiceItem = z.infer<typeof invoiceItemSchema>;
 
-function normalizeInvoiceItems(items: ParsedInvoiceItem[]) {
+function normalizeInvoiceItems(
+  items: ParsedInvoiceItem[],
+  currencyContext: { entryCurrency: string; usdToEntryRate: number }
+) {
   return items.map((item) => ({
     ...item,
-    amount: resolveInvoiceItemAmount(item),
+    unitPrice: convertInvoiceEntryValue(Number(item.unitPrice ?? 0), currencyContext),
+    amount: resolveInvoiceItemAmount({
+      quantity: item.quantity,
+      unitPrice: convertInvoiceEntryValue(Number(item.unitPrice ?? 0), currencyContext),
+      amount: convertInvoiceEntryValue(Number(item.amount ?? 0), currencyContext)
+    }),
     workerRole: item.workerRole ?? "OTHER",
     unit: item.unit ?? "",
     materialLabel: item.materialLabel?.trim() ?? "",
@@ -94,6 +219,24 @@ function normalizeInvoiceItems(items: ParsedInvoiceItem[]) {
     recordOnly: item.recordOnly ?? false,
     paid: false
   }));
+}
+
+function buildInvoiceHistoryScope(invoice: {
+  phase?: string;
+  phaseTaskId?: unknown;
+  section?: string;
+  sectionTaskId?: unknown;
+  subsection?: string;
+  subsectionTaskId?: unknown;
+}) {
+  return {
+    phase: invoice.phase ?? "",
+    phaseTaskId: toIdString(invoice.phaseTaskId),
+    section: invoice.section ?? "",
+    sectionTaskId: toIdString(invoice.sectionTaskId),
+    subsection: invoice.subsection ?? "",
+    subsectionTaskId: toIdString(invoice.subsectionTaskId)
+  };
 }
 
 router.get("/", async (req, res, next) => {
@@ -125,29 +268,72 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+router.get("/next-number", requireRole("OWNER", "CONTRACTOR"), async (_req, res, next) => {
+  try {
+    const invoiceNumber = await getNextInvoiceNumber();
+    res.json({ invoiceNumber });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
+    const operationId = randomUUID();
     const payload = createInvoiceSchema.parse(req.body);
     const scope = await resolveTaskScope(payload);
-    const normalizedItems = normalizeInvoiceItems(payload.items);
+    const currencyContext = await resolveInvoiceCurrencyContext({
+      currency: payload.currency,
+      issueDate: payload.issueDate
+    });
+    const normalizedItems = normalizeInvoiceItems(payload.items, currencyContext);
     const computedTotal = normalizedItems.reduce((sum, item) => sum + (item.recordOnly ? 0 : item.amount), 0);
+    const requestedInvoiceNumber = normalizeInvoiceNumber(payload.invoiceNumber);
+    const invoiceNumber = requestedInvoiceNumber || (await getNextInvoiceNumber());
+
+    if (await InvoiceModel.exists({ invoiceNumber })) {
+      res.status(409).json({ message: `Invoice number ${invoiceNumber} already exists` });
+      return;
+    }
 
     const invoice = await InvoiceModel.create({
       vendor: payload.vendor,
-      invoiceNumber: payload.invoiceNumber,
+      invoiceNumber,
       issueDate: payload.issueDate ? new Date(payload.issueDate) : new Date(),
       dueDate: new Date(payload.dueDate),
       phase: scope.phase,
       phaseTaskId: scope.phaseTaskId,
       section: scope.section,
       sectionTaskId: scope.sectionTaskId,
-      currency: payload.currency ?? "USD",
+      subsection: scope.subsection,
+      subsectionTaskId: scope.subsectionTaskId,
+      currency: currencyContext.storedCurrency,
+      entryCurrency: currencyContext.entryCurrency,
+      usdToEntryRate: currencyContext.usdToEntryRate,
+      exchangeRateDate: new Date(currencyContext.exchangeRateDate),
       notes: payload.notes ?? "",
       items: normalizedItems,
       totalAmount: computedTotal,
       paidAmount: 0,
       status: "UNPAID",
       createdBy: req.user?.id
+    });
+    const afterSnapshot = buildInvoiceSnapshot(invoice);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "INVOICE",
+      entityId: String(invoice._id),
+      entityLabel: invoice.invoiceNumber,
+      action: "CREATE",
+      summary: `Invoice ${invoice.invoiceNumber} created for ${invoice.vendor}`,
+      actor: req.user,
+      scope: buildInvoiceHistoryScope(invoice),
+      after: afterSnapshot,
+      moneyImpact: {
+        label: "Invoice Total",
+        before: 0,
+        after: Number(afterSnapshot.totalAmount ?? 0)
+      }
     });
 
     res.status(201).json({ invoice });
@@ -158,6 +344,7 @@ router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
 
 router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
+    const operationId = randomUUID();
     const payload = updateInvoiceSchema.parse(req.body);
     const invoice = await InvoiceModel.findById(req.params.id);
 
@@ -171,8 +358,14 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
       return;
     }
 
+    const beforeSnapshot = buildInvoiceSnapshot(invoice);
+
     const scope = await resolveTaskScope(payload);
-    const normalizedItems = normalizeInvoiceItems(payload.items);
+    const currencyContext = await resolveInvoiceCurrencyContext({
+      currency: payload.currency,
+      issueDate: payload.issueDate
+    });
+    const normalizedItems = normalizeInvoiceItems(payload.items, currencyContext);
     const mergedItems =
       invoice.status === "PARTIALLY_PAID"
         ? (() => {
@@ -214,7 +407,12 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
     invoice.phaseTaskId = scope.phaseTaskId as any;
     invoice.section = scope.section;
     invoice.sectionTaskId = scope.sectionTaskId as any;
-    invoice.currency = payload.currency ?? invoice.currency ?? "USD";
+    invoice.subsection = scope.subsection;
+    invoice.subsectionTaskId = scope.subsectionTaskId as any;
+    invoice.currency = currencyContext.storedCurrency;
+    (invoice as any).entryCurrency = currencyContext.entryCurrency;
+    (invoice as any).usdToEntryRate = currencyContext.usdToEntryRate;
+    (invoice as any).exchangeRateDate = new Date(currencyContext.exchangeRateDate);
     invoice.notes = payload.notes ?? "";
     invoice.items = mergedItems as any;
     invoice.totalAmount = computedTotal;
@@ -230,6 +428,33 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
       invoice.generatedExpenseIds = [];
     }
     await invoice.save();
+    const afterSnapshot = buildInvoiceSnapshot(invoice);
+    const changedFields = buildChangedFields(beforeSnapshot, afterSnapshot);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "INVOICE",
+      entityId: String(invoice._id),
+      entityLabel: invoice.invoiceNumber,
+      action: "UPDATE",
+      summary:
+        beforeSnapshot.totalAmount !== afterSnapshot.totalAmount
+          ? `Invoice ${invoice.invoiceNumber} total changed from ${beforeSnapshot.currency} ${beforeSnapshot.totalAmount} to ${afterSnapshot.currency} ${afterSnapshot.totalAmount}`
+          : `Invoice ${invoice.invoiceNumber} updated`,
+      actor: req.user,
+      scope: buildInvoiceHistoryScope(invoice),
+      before: beforeSnapshot,
+      after: afterSnapshot,
+      changedFields,
+      moneyImpact:
+        beforeSnapshot.totalAmount !== afterSnapshot.totalAmount
+          ? {
+              label: "Invoice Total",
+              currency: String(afterSnapshot.currency ?? beforeSnapshot.currency ?? "USD"),
+              before: Number(beforeSnapshot.totalAmount ?? 0),
+              after: Number(afterSnapshot.totalAmount ?? 0)
+            }
+          : undefined
+    });
 
     res.json({ invoice });
   } catch (error) {
@@ -237,14 +462,60 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
   }
 });
 
+router.delete("/:id", requireRole("OWNER"), async (req, res, next) => {
+  try {
+    const operationId = randomUUID();
+    const invoice = await InvoiceModel.findById(req.params.id);
+    if (!invoice) {
+      res.status(404).json({ message: "Invoice not found" });
+      return;
+    }
+
+    const hasPaidItems = invoice.items.some((item) => Boolean(item.paid));
+    const hasPaidAmount = Number(invoice.paidAmount ?? 0) > 0;
+    if (invoice.status !== "UNPAID" || hasPaidItems || hasPaidAmount) {
+      res.status(409).json({
+        message: "Only fully unpaid invoices can be deleted. Paid invoices must remain for audit history."
+      });
+      return;
+    }
+
+    const beforeSnapshot = buildInvoiceSnapshot(invoice);
+    await InvoiceModel.findByIdAndDelete(invoice._id);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "INVOICE",
+      entityId: String(invoice._id),
+      entityLabel: invoice.invoiceNumber,
+      action: "DELETE",
+      summary: `Invoice ${invoice.invoiceNumber} deleted`,
+      actor: req.user,
+      scope: buildInvoiceHistoryScope(invoice),
+      before: beforeSnapshot,
+      moneyImpact: {
+        label: "Invoice Total",
+        currency: String(beforeSnapshot.currency ?? "USD"),
+        before: Number(beforeSnapshot.totalAmount ?? 0),
+        after: 0
+      }
+    });
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
   try {
+    const operationId = randomUUID();
     const payloadSchema = z.object({
       paidDate: z.string().optional(),
       phase: z.string().optional(),
       phaseTaskId: z.string().optional(),
       section: z.string().optional(),
       sectionTaskId: z.string().optional(),
+      subsection: z.string().optional(),
+      subsectionTaskId: z.string().optional(),
       notes: z.string().optional(),
       itemIndexes: z.array(z.coerce.number().int().min(0)).optional()
     });
@@ -261,6 +532,8 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
       res.status(409).json({ message: "Invoice is already marked paid" });
       return;
     }
+
+    const beforeSnapshot = buildInvoiceSnapshot(invoice);
 
     const normalizedItemIndexes = Array.from(new Set(payload.itemIndexes ?? []))
       .filter((index) => index >= 0 && index < invoice.items.length)
@@ -280,8 +553,10 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
     const scope = await resolveTaskScope({
       phaseTaskId: payload.phaseTaskId ?? toIdString(invoice.phaseTaskId),
       sectionTaskId: payload.sectionTaskId ?? toIdString(invoice.sectionTaskId),
+      subsectionTaskId: payload.subsectionTaskId ?? toIdString(invoice.subsectionTaskId),
       phase: payload.phase ?? invoice.phase,
-      section: payload.section ?? invoice.section
+      section: payload.section ?? invoice.section,
+      subsection: payload.subsection ?? invoice.subsection
     });
     const phase = scope.phase;
     const generatedExpenseIds: Array<typeof invoice.generatedExpenseIds[number]> = [...invoice.generatedExpenseIds];
@@ -345,6 +620,8 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
           existingTally.phaseTaskId = scope.phaseTaskId as any;
           existingTally.section = scope.section;
           existingTally.sectionTaskId = scope.sectionTaskId as any;
+          existingTally.subsection = scope.subsection;
+          existingTally.subsectionTaskId = scope.subsectionTaskId as any;
           existingTally.notes = payload.notes ?? invoice.notes;
           existingTally.source = "invoice-paid-tally";
           existingTally.workerRole = normalizedWorkerRole;
@@ -373,6 +650,8 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
           phaseTaskId: scope.phaseTaskId,
           section: scope.section,
           sectionTaskId: scope.sectionTaskId,
+          subsection: scope.subsection,
+          subsectionTaskId: scope.subsectionTaskId,
           unit: tallyUnit,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
@@ -405,6 +684,8 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
         phaseTaskId: scope.phaseTaskId,
         section: scope.section,
         sectionTaskId: scope.sectionTaskId,
+        subsection: scope.subsection,
+        subsectionTaskId: scope.subsectionTaskId,
         unit: item.unit ?? "",
         unitPrice: item.unitPrice,
         quantity: item.quantity,
@@ -448,6 +729,38 @@ router.patch("/:id/mark-paid", requireRole("OWNER"), async (req, res, next) => {
     }
     invoice.generatedExpenseIds = generatedExpenseIds;
     await invoice.save();
+    const afterSnapshot = buildInvoiceSnapshot(invoice);
+    const changedFields = buildChangedFields(beforeSnapshot, afterSnapshot);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "INVOICE",
+      entityId: String(invoice._id),
+      entityLabel: invoice.invoiceNumber,
+      action: "MARK_PAID",
+      summary:
+        invoice.status === "PAID"
+          ? `Invoice ${invoice.invoiceNumber} marked paid`
+          : `Applied payment to invoice ${invoice.invoiceNumber}`,
+      actor: req.user,
+      scope: buildInvoiceHistoryScope(invoice),
+      before: beforeSnapshot,
+      after: afterSnapshot,
+      changedFields,
+      moneyImpact: {
+        label: "Invoice Paid Amount",
+        currency: String(afterSnapshot.currency ?? beforeSnapshot.currency ?? "USD"),
+        before: Number(beforeSnapshot.paidAmount ?? 0),
+        after: Number(afterSnapshot.paidAmount ?? 0)
+      },
+      metadata: {
+        createdExpenses,
+        mergedTallies,
+        ignoredItems,
+        newlyPaidItems,
+        alreadyPaidItems,
+        remainingUnpaidItems
+      }
+    });
 
     res.json({ invoice, createdExpenses, mergedTallies, ignoredItems, newlyPaidItems, alreadyPaidItems, remainingUnpaidItems });
   } catch (error) {

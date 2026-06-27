@@ -1,17 +1,4 @@
-import type { Expense } from "../types/models";
-
-export type MaterialPresetHistoryEntry = {
-  unitPrice: number;
-  changedAt: string;
-};
-
-export type MaterialPreset = {
-  id: string;
-  name: string;
-  unit: string;
-  unitPrice: number;
-  priceHistory: MaterialPresetHistoryEntry[];
-};
+import type { Expense, MaterialPreset } from "../types/models";
 
 export const materialPresetStorageKey = "dream_home_material_presets_v1";
 export const materialPresetDeletedStorageKey = "dream_home_material_presets_deleted_v1";
@@ -110,7 +97,11 @@ export function parseStoredMaterialPresets(raw: string | null): MaterialPreset[]
           ? (item as MaterialPreset).priceHistory
               .map((entry) => ({
                 unitPrice: Number(entry?.unitPrice ?? 0),
-                changedAt: String(entry?.changedAt ?? "")
+                changedAt: String(entry?.changedAt ?? ""),
+                previousUnitPrice:
+                  entry && typeof entry === "object" && "previousUnitPrice" in entry && Number.isFinite(Number(entry.previousUnitPrice))
+                    ? Number(entry.previousUnitPrice)
+                    : undefined
               }))
               .filter((entry) => Number.isFinite(entry.unitPrice) && entry.changedAt.length > 0)
           : []
@@ -138,6 +129,30 @@ export function parseStoredRemovedPresetIds(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+export function readLegacyMaterialPresetMigrationPayload() {
+  if (typeof window === "undefined") {
+    return { presets: [] as MaterialPreset[], removedPresetIds: [] as string[], hasLegacyData: false };
+  }
+
+  const presetRaw = window.localStorage.getItem(materialPresetStorageKey);
+  const removedRaw = window.localStorage.getItem(materialPresetDeletedStorageKey);
+
+  return {
+    presets: presetRaw ? parseStoredMaterialPresets(presetRaw) : [],
+    removedPresetIds: removedRaw ? parseStoredRemovedPresetIds(removedRaw) : [],
+    hasLegacyData: presetRaw !== null || removedRaw !== null
+  };
+}
+
+export function clearLegacyMaterialPresetStorage() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(materialPresetStorageKey);
+  window.localStorage.removeItem(materialPresetDeletedStorageKey);
 }
 
 export function mergePresetsWithExpenses(current: MaterialPreset[], expenses: Expense[], removedPresetIds: string[] = []): MaterialPreset[] {

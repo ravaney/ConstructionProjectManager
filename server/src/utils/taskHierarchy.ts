@@ -18,10 +18,15 @@ type TaskDocumentLike = {
   sectionTaskId?: { toString(): string } | string | null;
   status?: TaskStatus;
   owner?: string;
+  plannedStartDate?: Date | null;
+  plannedEndDate?: Date | null;
+  actualStartDate?: Date | null;
+  actualEndDate?: Date | null;
   dueDate?: Date | null;
   priority?: "LOW" | "MEDIUM" | "HIGH";
   budgetImpact?: number;
   estimateAmount?: number;
+  estimateGroupId?: { toString(): string } | string | null;
   sortOrder?: number;
   closedAt?: Date | null;
   createdAt?: Date | null;
@@ -31,6 +36,8 @@ type TaskNodeSummary = {
   _id: string;
   title: string;
   description: string;
+  wbsId?: string;
+  predecessorWbsId?: string;
   phase: string;
   section: string;
   nodeType: TaskNodeType;
@@ -39,10 +46,16 @@ type TaskNodeSummary = {
   sectionTaskId?: string;
   status: TaskStatus;
   owner: string;
+  resources: string[];
+  plannedStartDate?: string;
+  plannedEndDate?: string;
+  actualStartDate?: string;
+  actualEndDate?: string;
   dueDate?: string;
   priority: "LOW" | "MEDIUM" | "HIGH";
   budgetImpact: number;
   estimateAmount: number;
+  estimateGroupId?: string;
   sortOrder: number;
   closedAt?: string;
   financials: {
@@ -69,15 +82,19 @@ type HierarchySnapshot = {
 type ScopeInput = {
   phaseTaskId?: string;
   sectionTaskId?: string;
+  subsectionTaskId?: string;
   phase?: string;
   section?: string;
+  subsection?: string;
 };
 
 type ScopeFields = {
   phaseTaskId?: string;
   sectionTaskId?: string;
+  subsectionTaskId?: string;
   phase: string;
   section: string;
+  subsection: string;
 };
 
 const DEFAULT_PHASE_TITLE = "Phase 1";
@@ -106,6 +123,49 @@ function toMoney(value: number): number {
 function sanitizeTitle(value: string | undefined, fallback: string): string {
   const normalized = (value ?? "").trim();
   return normalized || fallback;
+}
+
+function parseTaskResources(owner: string | undefined): string[] {
+  if (typeof owner !== "string") {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const resources: string[] = [];
+
+  for (const part of owner.split("|")) {
+    const normalized = part.trim();
+    if (!normalized) {
+      continue;
+    }
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    resources.push(normalized);
+  }
+
+  return resources;
+}
+
+function stripStaticTaskDetailLines(description: string | undefined): string {
+  if (typeof description !== "string" || description.trim().length === 0) {
+    return "";
+  }
+
+  const filteredLines = description
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        !/^\s*wbs\s*id\s*:/i.test(line) &&
+        !/^\s*wbsid\s*:/i.test(line) &&
+        !/^\s*predecessor\s*:/i.test(line)
+    );
+
+  return filteredLines.join("\n").trim();
 }
 
 function sortNodes<T extends TaskDocumentLike>(items: T[]): T[] {
@@ -251,10 +311,12 @@ async function syncScopedFinancialNames(taskMap: Map<string, TaskDocumentLike>) 
     .map((expense) => {
       const phaseId = toIdString(expense.phaseTaskId);
       const sectionId = toIdString(expense.sectionTaskId);
+      const subsectionId = toIdString(expense.subsectionTaskId);
       const phaseTitle = phaseId ? sanitizeTitle(taskMap.get(phaseId)?.title, sanitizeTitle(expense.phase, DEFAULT_PHASE_TITLE)) : sanitizeTitle(expense.phase, DEFAULT_PHASE_TITLE);
       const sectionTitle = sectionId ? sanitizeTitle(taskMap.get(sectionId)?.title, "") : sanitizeTitle(expense.section, "");
+      const subsectionTitle = subsectionId ? sanitizeTitle(taskMap.get(subsectionId)?.title, "") : sanitizeTitle(expense.subsection, "");
 
-      if (expense.phase === phaseTitle && (expense.section ?? "") === sectionTitle) {
+      if (expense.phase === phaseTitle && (expense.section ?? "") === sectionTitle && (expense.subsection ?? "") === subsectionTitle) {
         return null;
       }
 
@@ -264,7 +326,8 @@ async function syncScopedFinancialNames(taskMap: Map<string, TaskDocumentLike>) 
           update: {
             $set: {
               phase: phaseTitle,
-              section: sectionTitle
+              section: sectionTitle,
+              subsection: subsectionTitle
             }
           }
         }
@@ -276,10 +339,12 @@ async function syncScopedFinancialNames(taskMap: Map<string, TaskDocumentLike>) 
     .map((invoice) => {
       const phaseId = toIdString(invoice.phaseTaskId);
       const sectionId = toIdString(invoice.sectionTaskId);
+      const subsectionId = toIdString(invoice.subsectionTaskId);
       const phaseTitle = phaseId ? sanitizeTitle(taskMap.get(phaseId)?.title, sanitizeTitle(invoice.phase, DEFAULT_PHASE_TITLE)) : sanitizeTitle(invoice.phase, DEFAULT_PHASE_TITLE);
       const sectionTitle = sectionId ? sanitizeTitle(taskMap.get(sectionId)?.title, "") : sanitizeTitle(invoice.section, "");
+      const subsectionTitle = subsectionId ? sanitizeTitle(taskMap.get(subsectionId)?.title, "") : sanitizeTitle(invoice.subsection, "");
 
-      if (invoice.phase === phaseTitle && (invoice.section ?? "") === sectionTitle) {
+      if (invoice.phase === phaseTitle && (invoice.section ?? "") === sectionTitle && (invoice.subsection ?? "") === subsectionTitle) {
         return null;
       }
 
@@ -289,7 +354,8 @@ async function syncScopedFinancialNames(taskMap: Map<string, TaskDocumentLike>) 
           update: {
             $set: {
               phase: phaseTitle,
-              section: sectionTitle
+              section: sectionTitle,
+              subsection: subsectionTitle
             }
           }
         }
@@ -462,6 +528,18 @@ export async function syncTaskHierarchyState() {
       statusChanges.closedAt = undefined;
     }
 
+    if (nextStatus !== "PLANNED" && !task.actualStartDate) {
+      statusChanges.actualStartDate = new Date();
+    }
+
+    if (nextStatus === "DONE" && !task.actualEndDate) {
+      statusChanges.actualEndDate = new Date();
+    }
+
+    if (nextStatus !== "DONE" && task.actualEndDate) {
+      statusChanges.actualEndDate = undefined;
+    }
+
     queueTaskUpdate(taskId, statusChanges);
   }
 
@@ -476,11 +554,30 @@ export async function syncTaskHierarchyState() {
 export async function resolveTaskScope(input: ScopeInput): Promise<ScopeFields> {
   await ensureLegacyTaskHierarchy();
 
+  const subsectionId = sanitizeTitle(input.subsectionTaskId, "");
   const sectionId = sanitizeTitle(input.sectionTaskId, "");
   const phaseId = sanitizeTitle(input.phaseTaskId, "");
-  const ids = [sectionId, phaseId].filter(Boolean);
+  const ids = [subsectionId, sectionId, phaseId].filter(Boolean);
   const linkedTasks = ids.length > 0 ? await TaskModel.find({ _id: { $in: ids } }) : [];
   const taskMap = new Map(linkedTasks.map((task) => [toIdString(task._id), task]));
+
+  const linkedSubsection = subsectionId ? taskMap.get(subsectionId) : undefined;
+  if (linkedSubsection && linkedSubsection.nodeType === "TASK") {
+    const resolvedSectionId = toIdString(linkedSubsection.sectionTaskId) || toIdString(linkedSubsection.parentTaskId) || sectionId;
+    const linkedSection =
+      resolvedSectionId ? taskMap.get(resolvedSectionId) ?? (await TaskModel.findById(resolvedSectionId)) : undefined;
+    const resolvedPhaseId = toIdString(linkedSubsection.phaseTaskId) || toIdString(linkedSection?.phaseTaskId) || phaseId;
+    const linkedPhase = resolvedPhaseId ? taskMap.get(resolvedPhaseId) ?? (await TaskModel.findById(resolvedPhaseId)) : undefined;
+
+    return {
+      phaseTaskId: resolvedPhaseId || undefined,
+      sectionTaskId: resolvedSectionId || undefined,
+      subsectionTaskId: toIdString(linkedSubsection._id),
+      phase: sanitizeTitle(linkedPhase?.title, sanitizeTitle(input.phase, sanitizeTitle(linkedSubsection.phase, DEFAULT_PHASE_TITLE))),
+      section: sanitizeTitle(linkedSection?.title, sanitizeTitle(input.section, sanitizeTitle(linkedSubsection.section, ""))),
+      subsection: sanitizeTitle(linkedSubsection.title, sanitizeTitle(input.subsection, ""))
+    };
+  }
 
   const linkedSection = sectionId ? taskMap.get(sectionId) : undefined;
   if (linkedSection && linkedSection.nodeType === "SECTION") {
@@ -489,8 +586,10 @@ export async function resolveTaskScope(input: ScopeInput): Promise<ScopeFields> 
     return {
       phaseTaskId: resolvedPhaseId || undefined,
       sectionTaskId: toIdString(linkedSection._id),
+      subsectionTaskId: undefined,
       phase: sanitizeTitle(linkedPhase?.title, sanitizeTitle(input.phase, sanitizeTitle(linkedSection.phase, DEFAULT_PHASE_TITLE))),
-      section: sanitizeTitle(linkedSection.title, sanitizeTitle(input.section, ""))
+      section: sanitizeTitle(linkedSection.title, sanitizeTitle(input.section, "")),
+      subsection: ""
     };
   }
 
@@ -500,15 +599,19 @@ export async function resolveTaskScope(input: ScopeInput): Promise<ScopeFields> 
       phaseTaskId: toIdString(linkedPhase._id),
       phase: sanitizeTitle(linkedPhase.title, sanitizeTitle(input.phase, DEFAULT_PHASE_TITLE)),
       sectionTaskId: undefined,
-      section: ""
+      section: "",
+      subsectionTaskId: undefined,
+      subsection: ""
     };
   }
 
   return {
     phaseTaskId: phaseId || undefined,
     sectionTaskId: sectionId || undefined,
+    subsectionTaskId: subsectionId || undefined,
     phase: sanitizeTitle(input.phase, DEFAULT_PHASE_TITLE),
-    section: sanitizeTitle(input.section, "")
+    section: sanitizeTitle(input.section, ""),
+    subsection: sanitizeTitle(input.subsection, "")
   };
 }
 
@@ -538,6 +641,74 @@ export async function getTaskHierarchySnapshot(): Promise<HierarchySnapshot> {
 
   for (const [parentId, children] of childrenMap.entries()) {
     childrenMap.set(parentId, sortNodes(children));
+  }
+
+  const phaseWbsMap = new Map<string, string>();
+  const sectionWbsMap = new Map<string, string>();
+  const taskWbsMap = new Map<string, string>();
+  const taskPredecessorWbsMap = new Map<string, string>();
+  const phaseNodes = normalizedTasks.filter((task) => (task.nodeType ?? "TASK") === "PHASE");
+
+  phaseNodes.forEach((phaseTask, phaseIndex) => {
+    const phaseId = toIdString(phaseTask._id);
+    const phaseNumber = phaseIndex + 1;
+    phaseWbsMap.set(phaseId, `${phaseNumber}.0`);
+
+    const phaseSections = (childrenMap.get(phaseId) ?? []).filter((child) => (child.nodeType ?? "TASK") === "SECTION");
+    phaseSections.forEach((sectionTask, sectionIndex) => {
+      const sectionId = toIdString(sectionTask._id);
+      const sectionNumber = sectionIndex + 1;
+      const sectionWbs = `${phaseNumber}.${sectionNumber}`;
+      sectionWbsMap.set(sectionId, sectionWbs);
+
+      const sectionTasks = (childrenMap.get(sectionId) ?? []).filter((child) => (child.nodeType ?? "TASK") === "TASK");
+      sectionTasks.forEach((childTask, taskIndex) => {
+        const childTaskId = toIdString(childTask._id);
+        taskWbsMap.set(childTaskId, `${sectionWbs}.${taskIndex + 1}`);
+        if (taskIndex > 0) {
+          taskPredecessorWbsMap.set(childTaskId, `${sectionWbs}.${taskIndex}`);
+        }
+      });
+    });
+  });
+
+  function resolveDynamicWbsId(task: any): string | undefined {
+    const taskId = toIdString(task._id);
+    const nodeType = (task.nodeType ?? "TASK") as TaskNodeType;
+
+    if (nodeType === "PHASE") {
+      return phaseWbsMap.get(taskId);
+    }
+
+    if (nodeType === "SECTION") {
+      if (sectionWbsMap.has(taskId)) {
+        return sectionWbsMap.get(taskId);
+      }
+
+      const phaseId = toIdString(task.phaseTaskId) || toIdString(task.parentTaskId);
+      const phaseNumber = phaseId ? phaseWbsMap.get(phaseId)?.split(".")[0] : undefined;
+      if (!phaseNumber) {
+        return undefined;
+      }
+
+      const siblingSections = (childrenMap.get(phaseId) ?? []).filter((child) => (child.nodeType ?? "TASK") === "SECTION");
+      const siblingIndex = siblingSections.findIndex((child) => toIdString(child._id) === taskId);
+      return siblingIndex >= 0 ? `${phaseNumber}.${siblingIndex + 1}` : undefined;
+    }
+
+    if (taskWbsMap.has(taskId)) {
+      return taskWbsMap.get(taskId);
+    }
+
+    const sectionId = toIdString(task.sectionTaskId) || toIdString(task.parentTaskId);
+    const sectionWbs = sectionId ? sectionWbsMap.get(sectionId) : undefined;
+    if (!sectionWbs) {
+      return undefined;
+    }
+
+    const siblingTasks = (childrenMap.get(sectionId) ?? []).filter((child) => (child.nodeType ?? "TASK") === "TASK");
+    const siblingIndex = siblingTasks.findIndex((child) => toIdString(child._id) === taskId);
+    return siblingIndex >= 0 ? `${sectionWbs}.${siblingIndex + 1}` : undefined;
   }
 
   const directSpent = new Map<string, number>();
@@ -691,7 +862,9 @@ export async function getTaskHierarchySnapshot(): Promise<HierarchySnapshot> {
       return {
         _id: taskId,
         title: sanitizeTitle(task.title, "Untitled"),
-        description: task.description ?? "",
+        description: stripStaticTaskDetailLines(task.description),
+        wbsId: resolveDynamicWbsId(task),
+        predecessorWbsId: taskPredecessorWbsMap.get(taskId),
         phase: sanitizeTitle(task.phase, DEFAULT_PHASE_TITLE),
         section: sanitizeTitle(task.section, ""),
         nodeType: (task.nodeType ?? "TASK") as TaskNodeType,
@@ -700,10 +873,16 @@ export async function getTaskHierarchySnapshot(): Promise<HierarchySnapshot> {
         sectionTaskId: toIdString(task.sectionTaskId) || undefined,
         status: (task.status ?? "PLANNED") as TaskStatus,
         owner: task.owner ?? "",
+        resources: parseTaskResources(task.owner),
+        plannedStartDate: task.plannedStartDate ? new Date(task.plannedStartDate).toISOString() : undefined,
+        plannedEndDate: task.plannedEndDate ? new Date(task.plannedEndDate).toISOString() : undefined,
+        actualStartDate: task.actualStartDate ? new Date(task.actualStartDate).toISOString() : undefined,
+        actualEndDate: task.actualEndDate ? new Date(task.actualEndDate).toISOString() : undefined,
         dueDate: task.dueDate ? new Date(task.dueDate).toISOString() : undefined,
         priority: task.priority ?? "MEDIUM",
         budgetImpact: Number(task.budgetImpact ?? task.estimateAmount ?? 0),
         estimateAmount: Number(task.estimateAmount ?? task.budgetImpact ?? 0),
+        estimateGroupId: toIdString(task.estimateGroupId) || undefined,
         sortOrder: Number(task.sortOrder ?? 0),
         closedAt: task.closedAt ? new Date(task.closedAt).toISOString() : undefined,
         financials: financialRollups.get(taskId) ?? {

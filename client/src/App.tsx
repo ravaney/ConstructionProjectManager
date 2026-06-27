@@ -1,46 +1,75 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthScreen } from "./components/AuthScreen";
 import { BudgetOverview } from "./components/BudgetOverview";
-import { CsvImporter } from "./components/CsvImporter";
 import { ExpenseSection } from "./components/ExpenseSection";
+import { HistoryPanel } from "./components/HistoryPanel";
 import { InvoiceCenter } from "./components/InvoiceCenter";
+import { ProjectManagement } from "./components/ProjectManagement";
+import { ProjectAssistantWidget } from "./components/ProjectAssistantWidget";
 import { ReportsPanel } from "./components/ReportsPanel";
-import { TaskBoard } from "./components/TaskBoard";
-import { TeamManagement } from "./components/TeamManagement";
-import { WorkerProfiles } from "./components/WorkerProfiles";
-import type { AppUser, DashboardSummary, Expense, ExpenseInput, Project, Task, TaskInput } from "./types/models";
-import { formatCurrency } from "./utils/format";
+import { TaskAlertDrawer } from "./components/TaskAlertDrawer";
+import type { AppUser, DashboardSummary, Expense, ExpenseInput, JmdRateQuote, Project, Task, TaskFocusRequest, TaskInput } from "./types/models";
+import { formatCurrency, parseCalendarDate } from "./utils/format";
 import { api } from "./utils/api";
+import { getCurrentPhase } from "./utils/workBreakdown";
 
-type TabKey = "dashboard" | "expenses" | "invoices" | "import" | "reports" | "tasks" | "workers" | "team";
+type TabKey = "dashboard" | "expenses" | "invoices" | "reports" | "project-management" | "history";
 type SectionKey = "budget" | "management";
+type ThemeMode = "dark" | "light";
 type IconName =
   | "budget"
   | "management"
   | "dashboard"
   | "expenses"
   | "invoices"
-  | "import"
   | "reports"
-  | "tasks"
-  | "workers"
-  | "team"
+  | "history"
+  | "project"
   | "add"
   | "confirm"
   | "close"
   | "edit"
   | "refresh"
-  | "logout";
+  | "notification"
+  | "logout"
+  | "sun"
+  | "moon";
+
+type TicketAlertSeverity = "TODAY" | "OVERDUE";
+
+type TicketDueAlert = {
+  key: string;
+  taskId: string;
+  title: string;
+  phase: string;
+  section: string;
+  dueDate: string;
+  severity: TicketAlertSeverity;
+  daysLate: number;
+};
+
+type TicketAlertToast = {
+  key: string;
+  taskId: string;
+  severity: TicketAlertSeverity;
+  title: string;
+  message: string;
+};
+
+type TaskDrawerState = {
+  taskId: string;
+  mode: "edit" | "readonly";
+};
+
+const TICKET_DUE_ALERT_SEEN_STORAGE_KEY = "construction_os.ticket_due_alerts_seen.v1";
 
 const tabs: Array<{ key: TabKey; label: string; section: SectionKey; icon: IconName }> = [
   { key: "dashboard", label: "Budget Dashboard", section: "budget", icon: "dashboard" },
   { key: "expenses", label: "Expenses", section: "budget", icon: "expenses" },
   { key: "invoices", label: "Invoices", section: "budget", icon: "invoices" },
-  { key: "import", label: "Import CSV", section: "budget", icon: "import" },
   { key: "reports", label: "Reports", section: "budget", icon: "reports" },
-  { key: "tasks", label: "Project Tasks", section: "management", icon: "tasks" },
-  { key: "workers", label: "Worker Profiles", section: "management", icon: "workers" },
-  { key: "team", label: "Team", section: "management", icon: "team" }
+  { key: "project-management", label: "Project Management", section: "management", icon: "project" },
+  { key: "history", label: "History", section: "management", icon: "history" }
 ];
 
 function NavIcon({ name }: { name: IconName }) {
@@ -100,14 +129,6 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M8 16h6" />
         </svg>
       );
-    case "import":
-      return (
-        <svg {...props}>
-          <path d="M12 3v12" />
-          <path d="M8 11l4 4 4-4" />
-          <path d="M4 19h16" />
-        </svg>
-      );
     case "reports":
       return (
         <svg {...props}>
@@ -117,30 +138,20 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M9 16h4" />
         </svg>
       );
-    case "tasks":
+    case "history":
       return (
         <svg {...props}>
-          <path d="M9 11l2 2 4-4" />
-          <path d="M4 6h16" />
-          <path d="M4 12h4" />
-          <path d="M4 18h16" />
+          <circle cx="12" cy="12" r="8" />
+          <path d="M12 8v5l3 2" />
         </svg>
       );
-    case "workers":
+    case "project":
       return (
         <svg {...props}>
-          <circle cx="8" cy="8" r="3" />
-          <circle cx="16" cy="10" r="2" />
-          <path d="M3 19c0-3.2 2.7-5.2 6-5.2" />
-          <path d="M10.5 18.7c.6-1.8 2.1-3 4.2-3" />
-        </svg>
-      );
-    case "team":
-      return (
-        <svg {...props}>
-          <circle cx="9" cy="8" r="3" />
-          <circle cx="17" cy="10" r="2" />
-          <path d="M3 19c0-3 2.5-5 6-5s6 2 6 5" />
+          <rect x="3" y="4" width="18" height="16" />
+          <path d="M7 8h10" />
+          <path d="M7 12h7" />
+          <path d="M7 16h4" />
         </svg>
       );
     case "add":
@@ -177,12 +188,39 @@ function NavIcon({ name }: { name: IconName }) {
           <path d="M20 4v7h-7" />
         </svg>
       );
+    case "notification":
+      return (
+        <svg {...props}>
+          <path d="M15 17h5l-1.4-1.4a2 2 0 0 1-.6-1.4V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
+          <path d="M9 17a3 3 0 0 0 6 0" />
+        </svg>
+      );
     case "logout":
       return (
         <svg {...props}>
           <path d="M9 4H4v16h5" />
           <path d="M16 16l5-4-5-4" />
           <path d="M21 12H9" />
+        </svg>
+      );
+    case "sun":
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2.5v2.2" />
+          <path d="M12 19.3v2.2" />
+          <path d="M4.9 4.9 6.5 6.5" />
+          <path d="m17.5 17.5 1.6 1.6" />
+          <path d="M2.5 12h2.2" />
+          <path d="M19.3 12h2.2" />
+          <path d="m4.9 19.1 1.6-1.6" />
+          <path d="m17.5 6.5 1.6-1.6" />
+        </svg>
+      );
+    case "moon":
+      return (
+        <svg {...props}>
+          <path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.8 7.8 0 1 0 9.5 9.5Z" />
         </svg>
       );
     default:
@@ -196,6 +234,37 @@ const budgetCurrencyFormatter = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 0
 });
 
+function isTabKey(value: string): value is TabKey {
+  return tabs.some((tab) => tab.key === value);
+}
+
+function readInitialTab(): TabKey {
+  if (typeof window === "undefined") {
+    return "dashboard";
+  }
+
+  const hashTab = window.location.hash.replace(/^#/, "");
+  if (isTabKey(hashTab)) {
+    return hashTab;
+  }
+
+  const storedTab = window.localStorage.getItem("active_tab");
+  if (storedTab && isTabKey(storedTab)) {
+    return storedTab;
+  }
+
+  return "dashboard";
+}
+
+function readInitialTheme(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+
+  const storedTheme = window.localStorage.getItem("app_theme");
+  return storedTheme === "light" ? "light" : "dark";
+}
+
 function parseBudgetAmount(value: string): number {
   const digitsOnly = value.replace(/[^\d]/g, "");
   return digitsOnly ? Number(digitsOnly) : 0;
@@ -205,10 +274,92 @@ function formatBudgetAmount(value: number): string {
   return budgetCurrencyFormatter.format(Math.max(0, Math.round(value)));
 }
 
+function toStartOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function toDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function readDueDate(value?: string): Date | null {
+  const parsed = parseCalendarDate(value);
+  return parsed ? toStartOfLocalDay(parsed) : null;
+}
+
+function daysBetween(lateDate: Date, earlyDate: Date): number {
+  const diffMs = lateDate.getTime() - earlyDate.getTime();
+  return Math.max(0, Math.floor(diffMs / 86_400_000));
+}
+
+function getTicketDueAlerts(tasks: Task[], now: Date): TicketDueAlert[] {
+  const today = toStartOfLocalDay(now);
+  const alerts: TicketDueAlert[] = [];
+
+  for (const task of tasks) {
+    if (task.nodeType !== "TASK" || task.status === "DONE") {
+      continue;
+    }
+
+    const due = readDueDate(task.dueDate);
+    if (!due) {
+      continue;
+    }
+
+    let severity: TicketAlertSeverity | null = null;
+    let daysLate = 0;
+    if (due.getTime() < today.getTime()) {
+      severity = "OVERDUE";
+      daysLate = daysBetween(today, due);
+    } else if (due.getTime() === today.getTime()) {
+      severity = "TODAY";
+    }
+
+    if (!severity) {
+      continue;
+    }
+
+    alerts.push({
+      key: `${task._id}:${toDateKey(due)}:${severity}`,
+      taskId: task._id,
+      title: task.title,
+      phase: task.phase,
+      section: task.section || "",
+      dueDate: task.dueDate ?? due.toISOString(),
+      severity,
+      daysLate
+    });
+  }
+
+  return alerts.sort((left, right) => {
+    if (left.severity !== right.severity) {
+      return left.severity === "OVERDUE" ? -1 : 1;
+    }
+
+    const leftDue = readDueDate(left.dueDate)?.getTime() ?? 0;
+    const rightDue = readDueDate(right.dueDate)?.getTime() ?? 0;
+    if (leftDue !== rightDue) {
+      return leftDue - rightDue;
+    }
+
+    return left.title.localeCompare(right.title);
+  });
+}
+
+function formatDueAlertLabel(alert: Pick<TicketDueAlert, "severity" | "daysLate">): string {
+  if (alert.severity === "OVERDUE") {
+    return alert.daysLate === 1 ? "Overdue by 1 day" : `Overdue by ${alert.daysLate} days`;
+  }
+
+  return "Due today";
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readInitialTheme);
+  const [activeTab, setActiveTab] = useState<TabKey>(readInitialTab);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [project, setProject] = useState<Project | null>(null);
+  const [fxQuote, setFxQuote] = useState<JmdRateQuote | null>(null);
   const [budgetInput, setBudgetInput] = useState("");
   const [editingBudget, setEditingBudget] = useState(false);
   const [savingBudget, setSavingBudget] = useState(false);
@@ -218,6 +369,86 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [error, setError] = useState("");
+  const [ticketAlertPanelOpen, setTicketAlertPanelOpen] = useState(false);
+  const [ticketAlertToasts, setTicketAlertToasts] = useState<TicketAlertToast[]>([]);
+  const [ticketAlertClock, setTicketAlertClock] = useState(() => Date.now());
+  const [projectTaskFocusRequest, setProjectTaskFocusRequest] = useState<TaskFocusRequest | null>(null);
+  const [taskDrawerState, setTaskDrawerState] = useState<TaskDrawerState | null>(null);
+  const [assistantDockedOpen, setAssistantDockedOpen] = useState(false);
+  const ticketAlertPanelRef = useRef<HTMLDivElement | null>(null);
+  const seenTicketAlertKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    function syncTabFromHash() {
+      const hashTab = window.location.hash.replace(/^#/, "");
+      if (isTabKey(hashTab)) {
+        setActiveTab((current) => (current === hashTab ? current : hashTab));
+      }
+    }
+
+    window.addEventListener("hashchange", syncTabFromHash);
+    return () => window.removeEventListener("hashchange", syncTabFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem("active_tab", activeTab);
+    const currentHash = window.location.hash.replace(/^#/, "");
+    if (currentHash !== activeTab) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${activeTab}`);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem("app_theme", themeMode);
+    document.body.dataset.theme = themeMode;
+
+    return () => {
+      delete document.body.dataset.theme;
+    };
+  }, [themeMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(TICKET_DUE_ALERT_SEEN_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      const normalized = parsed.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+      seenTicketAlertKeysRef.current = new Set(normalized);
+    } catch {
+      seenTicketAlertKeysRef.current = new Set();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      setTicketAlertClock(Date.now());
+    }, 60_000);
+
+    return () => window.clearInterval(timerId);
+  }, []);
 
   const refresh = useCallback(async () => {
     setError("");
@@ -230,10 +461,13 @@ export default function App() {
         api.getProject()
       ]);
 
+      const fxResponse = await api.getProjectFxRate(projectData.project.currency || "USD").catch(() => null);
+
       setSummary(summaryData);
       setExpenses(expenseData.expenses);
       setTasks(taskData.tasks);
       setProject(projectData.project);
+      setFxQuote(fxResponse?.quote ?? null);
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "Could not load project data";
 
@@ -285,6 +519,36 @@ export default function App() {
     setBudgetInput(formatBudgetAmount(project?.totalBudget ?? summary?.metrics.totalBudget ?? 0));
   }, [editingBudget, project?.totalBudget, summary?.metrics.totalBudget]);
 
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadFxQuote() {
+      if (!currentUser || !project?.currency) {
+        if (!ignore) {
+          setFxQuote(null);
+        }
+        return;
+      }
+
+      try {
+        const response = await api.getProjectFxRate(project.currency);
+        if (!ignore) {
+          setFxQuote(response.quote);
+        }
+      } catch {
+        if (!ignore) {
+          setFxQuote(null);
+        }
+      }
+    }
+
+    void loadFxQuote();
+
+    return () => {
+      ignore = true;
+    };
+  }, [currentUser, project?.currency]);
+
   async function handleAuthenticated(user: AppUser) {
     setCurrentUser(user);
     setLoading(true);
@@ -297,6 +561,7 @@ export default function App() {
     setCurrentUser(null);
     setSummary(null);
     setProject(null);
+    setFxQuote(null);
     setBudgetInput("");
     setEditingBudget(false);
     setExpenses([]);
@@ -304,8 +569,8 @@ export default function App() {
     setActiveTab("dashboard");
   }
 
-  async function handleUpdateBudget(totalBudget: number) {
-    await api.updateProject({ totalBudget });
+  async function handleUpdateProject(payload: Partial<Pick<Project, "name" | "phase" | "totalBudget" | "currency" | "notes" | "floorPlanMarkup">>) {
+    await api.updateProject(payload);
     await refresh();
   }
 
@@ -322,7 +587,7 @@ export default function App() {
     setError("");
 
     try {
-      await handleUpdateBudget(parsedBudget);
+      await handleUpdateProject({ totalBudget: parsedBudget });
       setEditingBudget(false);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Could not update budget");
@@ -371,15 +636,41 @@ export default function App() {
     await refresh();
   }
 
-  async function handleImport(expenseRows: ExpenseInput[]) {
-    const result = await api.bulkImportExpenses(expenseRows);
+  async function handleClearAllPhases() {
+    await api.clearAllPhases();
     await refresh();
-    return result.insertedCount;
   }
 
   function openTab(tab: TabKey) {
     setActiveTab(tab);
   }
+
+  function openGlobalTaskDrawer(taskId: string, mode: "edit" | "readonly" = "edit") {
+    setTaskDrawerState({ taskId, mode });
+  }
+
+  function openProjectTaskFromAlert(taskId: string) {
+    openGlobalTaskDrawer(taskId);
+    setTicketAlertPanelOpen(false);
+  }
+
+  function openTaskInProject(taskId: string) {
+    setTaskDrawerState(null);
+    setActiveTab("project-management");
+    setProjectTaskFocusRequest({
+      taskId,
+      requestKey: `project-focus-${taskId}-${Date.now()}`
+    });
+  }
+
+  function handleProjectTaskFocusHandled() {
+    setProjectTaskFocusRequest(null);
+  }
+
+  const alertDrawerTask = useMemo(
+    () => (taskDrawerState?.taskId ? tasks.find((task) => task._id === taskDrawerState.taskId) ?? null : null),
+    [taskDrawerState?.taskId, tasks]
+  );
 
   const pageTitle = useMemo(() => {
     if (!project) {
@@ -396,6 +687,7 @@ export default function App() {
 
     return summary.taskCounts.reduce((total, item) => total + item.count, 0);
   }, [summary]);
+  const currentPhaseNode = useMemo(() => getCurrentPhase(tasks), [tasks]);
 
   const activeSection = useMemo<SectionKey>(() => {
     return tabs.find((tab) => tab.key === activeTab)?.section ?? "budget";
@@ -424,7 +716,72 @@ export default function App() {
       }),
     []
   );
+  const dueTicketAlerts = useMemo(
+    () => getTicketDueAlerts(tasks, new Date(ticketAlertClock)),
+    [tasks, ticketAlertClock]
+  );
   const isOwner = currentUser?.role === "OWNER";
+
+  useEffect(() => {
+    setTicketAlertPanelOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!ticketAlertPanelOpen || typeof document === "undefined") {
+      return;
+    }
+
+    function handleOutsideClick(event: MouseEvent) {
+      const target = event.target as Node | null;
+      if (ticketAlertPanelRef.current && target && !ticketAlertPanelRef.current.contains(target)) {
+        setTicketAlertPanelOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [ticketAlertPanelOpen]);
+
+  useEffect(() => {
+    if (dueTicketAlerts.length === 0) {
+      return;
+    }
+
+    const unseenAlerts = dueTicketAlerts.filter((alert) => !seenTicketAlertKeysRef.current.has(alert.key));
+    if (unseenAlerts.length === 0) {
+      return;
+    }
+
+    unseenAlerts.forEach((alert) => {
+      seenTicketAlertKeysRef.current.add(alert.key);
+    });
+
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          TICKET_DUE_ALERT_SEEN_STORAGE_KEY,
+          JSON.stringify(Array.from(seenTicketAlertKeysRef.current).slice(-400))
+        );
+      } catch {
+        // Ignore localStorage write issues.
+      }
+    }
+
+    setTicketAlertToasts((current) => {
+      const nextToasts = unseenAlerts.slice(0, 3).map((alert) => ({
+        key: alert.key,
+        taskId: alert.taskId,
+        severity: alert.severity,
+        title: alert.title,
+        message: `${formatDueAlertLabel(alert)} • ${alert.section ? `${alert.phase} / ${alert.section}` : alert.phase}`
+      }));
+      return [...current, ...nextToasts].slice(-4);
+    });
+  }, [dueTicketAlerts]);
+
+  function dismissTicketToast(key: string) {
+    setTicketAlertToasts((current) => current.filter((toast) => toast.key !== key));
+  }
 
   if (!authReady || (loading && !currentUser)) {
     return (
@@ -439,35 +796,25 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell ribbon-shell">
+    <div
+      className={`app-shell ribbon-shell ${
+        activeTab === "project-management" || activeTab === "history" ? "pm-view-lock" : ""
+      } ${assistantDockedOpen ? "assistant-docked-layout" : ""} theme-${themeMode}`}
+    >
       <header className="app-ribbon">
-        <div className="ribbon-utility-bar">
+        <div className="ribbon-top-bar">
           <div className="ribbon-utility-brand">
-            <span className="ribbon-app-badge">
-              <NavIcon name="budget" />
-            </span>
             <div>
               <strong>Construction OS</strong>
               <span>{project?.name ?? "Dream Home"} workbook</span>
             </div>
           </div>
-          <div className="ribbon-utility-actions">
-            <button className="ribbon-icon-btn" type="button" onClick={() => refresh()}>
-              <NavIcon name="refresh" />
-            </button>
-            <button className="ribbon-account-btn" type="button" onClick={handleLogout}>
-              <NavIcon name="logout" />
-              <span>Logout</span>
-            </button>
-          </div>
-        </div>
 
-        <div className="ribbon-tab-row">
           <div className="ribbon-brand-pill">
             <div className="ribbon-brand-logo">{project?.name?.slice(0, 1) ?? "D"}</div>
             <div>
               <strong>{project?.name ?? "Dream Home"}</strong>
-              <span>{project?.phase ?? "Phase 1"} · {currentUser.name}</span>
+              <span>{currentPhaseNode?.title ?? project?.phase ?? "Phase 1"} | {currentUser.name}</span>
             </div>
           </div>
 
@@ -499,12 +846,97 @@ export default function App() {
               ))}
             </div>
           </div>
+
+          <div className="ribbon-utility-actions">
+            <button
+              className="ribbon-icon-btn ribbon-theme-btn"
+              type="button"
+              onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
+              aria-label={themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              title={themeMode === "dark" ? "Light theme" : "Dark theme"}
+            >
+              <NavIcon name={themeMode === "dark" ? "sun" : "moon"} />
+            </button>
+            <div className="ribbon-alert-wrap" ref={ticketAlertPanelRef}>
+              <button
+                className={`ribbon-icon-btn ribbon-alert-btn ${dueTicketAlerts.length > 0 ? "has-alerts" : ""}`}
+                type="button"
+                onClick={() => setTicketAlertPanelOpen((current) => !current)}
+                aria-label="Ticket alerts"
+                aria-expanded={ticketAlertPanelOpen}
+              >
+                <NavIcon name="notification" />
+                {dueTicketAlerts.length > 0 && (
+                  <span className="ribbon-alert-count">{dueTicketAlerts.length > 99 ? "99+" : dueTicketAlerts.length}</span>
+                )}
+              </button>
+              {ticketAlertPanelOpen && (
+                <section className="ribbon-alert-panel" aria-label="Ticket due alerts">
+                  <div className="ribbon-alert-panel-head">
+                    <strong>Ticket Alerts</strong>
+                    <span>{dueTicketAlerts.length}</span>
+                  </div>
+                  {dueTicketAlerts.length === 0 ? (
+                    <p className="muted">No due or overdue tickets.</p>
+                  ) : (
+                    <ul className="ribbon-alert-list">
+                      {dueTicketAlerts.slice(0, 12).map((alert) => (
+                        <li
+                          className={`ribbon-alert-item ${alert.severity === "OVERDUE" ? "overdue" : "today"}`}
+                          key={alert.key}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              openProjectTaskFromAlert(alert.taskId);
+                            }}
+                          >
+                            <strong>{alert.title}</strong>
+                            <span>{alert.section ? `${alert.phase} / ${alert.section}` : alert.phase}</span>
+                            <small>{formatDueAlertLabel(alert)}</small>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </div>
+            <button className="ribbon-account-btn" type="button" onClick={handleLogout}>
+              <NavIcon name="logout" />
+              <span>Logout</span>
+            </button>
+          </div>
         </div>
+        {fxQuote && (
+          <div className="ribbon-fx-line" aria-label="Current Jamaican dollar exchange rate">
+            {fxQuote.sourceCurrency} to {fxQuote.targetCurrency} today:{" "}
+            {fxQuote.rate.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 4
+            })}{" "}
+            on{" "}
+            {new Date(fxQuote.rateDate).toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+              year: "numeric"
+            })}
+          </div>
+        )}
       </header>
 
-      <section className="main-column ribbon-main-column">
-        {activeTab === "dashboard" && (
-          <header className="dashboard-head panel ribbon-page-head">
+      <div className={`app-body-shell ${assistantDockedOpen ? "assistant-docked" : ""}`}>
+        <section
+          className={`main-column ribbon-main-column ${
+            activeTab === "project-management"
+              ? "ribbon-main-column-full"
+              : activeTab === "history"
+                ? "ribbon-main-column-history"
+                : ""
+          }`}
+        >
+          {activeTab === "dashboard" && (
+            <header className="dashboard-head panel ribbon-page-head">
             <div className="dashboard-title">
               <p className="eyebrow">{activeTab === "dashboard" ? "Dashboard" : activeSection === "budget" ? "Budget Workspace" : "Management Workspace"}</p>
               <h1>{pageTitle}</h1>
@@ -610,55 +1042,122 @@ export default function App() {
                 <h3>{totalTasks}</h3>
               </article>
             </div>
-          </header>
-        )}
-
-        {error && <p className="error-text panel">{error}</p>}
-
-        <main className="content">
-          {loading && !summary ? (
-            <section className="panel">Loading your project dashboard...</section>
-          ) : (
-            <>
-              {activeTab === "dashboard" && (
-                <BudgetOverview
-                  summary={summary}
-                  tasks={tasks}
-                />
-              )}
-
-              {activeTab === "expenses" && (
-                <ExpenseSection
-                  expenses={expenses}
-                  tasks={tasks}
-                  canDeleteExpense={isOwner}
-                  onAddExpense={handleAddExpense}
-                  onUpdateExpense={handleUpdateExpense}
-                  onDeleteExpense={handleDeleteExpense}
-                />
-              )}
-
-              {activeTab === "invoices" && <InvoiceCenter expenses={expenses} tasks={tasks} canMarkPaid={isOwner} onInvoicePaid={refresh} />}
-
-              {activeTab === "tasks" && (
-                <TaskBoard
-                  tasks={tasks}
-                  canDeleteTask={isOwner}
-                  onCreateTask={handleCreateTask}
-                  onUpdateTask={handleUpdateTask}
-                  onDeleteTask={handleDeleteTask}
-                />
-              )}
-
-              {activeTab === "workers" && <WorkerProfiles canDelete={isOwner} />}
-
-              {activeTab === "import" && <CsvImporter canImport={isOwner} onImport={handleImport} />}
-              {activeTab === "reports" && <ReportsPanel />}
-              {activeTab === "team" && <TeamManagement currentUser={currentUser} />}
-            </>
+            </header>
           )}
-        </main>
-      </section>
+
+          {error && <p className="error-text panel">{error}</p>}
+
+          <main className="content">
+            {loading && !summary ? (
+              <section className="panel">Loading your project dashboard...</section>
+            ) : (
+              <>
+                {activeTab === "dashboard" && (
+                  <BudgetOverview
+                    summary={summary}
+                    tasks={tasks}
+                  />
+                )}
+
+                {activeTab === "expenses" && (
+                  <ExpenseSection
+                    expenses={expenses}
+                    tasks={tasks}
+                    globalPhaseTaskId={currentPhaseNode?._id}
+                    globalPhaseName={currentPhaseNode?.title ?? project?.phase ?? ""}
+                    canDeleteExpense={isOwner}
+                    onAddExpense={handleAddExpense}
+                    onUpdateExpense={handleUpdateExpense}
+                    onDeleteExpense={handleDeleteExpense}
+                    onOpenLinkedTask={openGlobalTaskDrawer}
+                  />
+                )}
+
+                {activeTab === "invoices" && (
+                  <InvoiceCenter
+                    expenses={expenses}
+                    tasks={tasks}
+                    globalPhaseTaskId={currentPhaseNode?._id}
+                    globalPhaseName={currentPhaseNode?.title ?? project?.phase ?? ""}
+                    canMarkPaid={isOwner}
+                    onInvoicePaid={refresh}
+                  />
+                )}
+
+                {activeTab === "reports" && <ReportsPanel />}
+                {activeTab === "history" && <HistoryPanel onOpenTask={(taskId) => openGlobalTaskDrawer(taskId, "readonly")} />}
+                {activeTab === "project-management" && (
+                  <ProjectManagement
+                    project={project}
+                    currentUser={currentUser}
+                    tasks={tasks}
+                    canDeleteTask={isOwner}
+                    canDeleteWorker={isOwner}
+                    focusTaskRequest={projectTaskFocusRequest}
+                    onCreateTask={handleCreateTask}
+                    onUpdateTask={handleUpdateTask}
+                    onDeleteTask={handleDeleteTask}
+                    onClearAllPhases={handleClearAllPhases}
+                    onRefreshData={refresh}
+                    onUpdateProject={handleUpdateProject}
+                    onTaskFocusHandled={handleProjectTaskFocusHandled}
+                  />
+                )}
+              </>
+            )}
+          </main>
+        </section>
+    <ProjectAssistantWidget
+      activeTab={activeTab}
+      currentUser={currentUser}
+      tasks={tasks}
+      currentPhaseTaskId={currentPhaseNode?._id}
+      onOpenTask={(taskId) => openGlobalTaskDrawer(taskId, "readonly")}
+      taskDrawerOpen={Boolean(alertDrawerTask)}
+      onDockedLayoutChange={setAssistantDockedOpen}
+          onProjectMutation={refresh}
+        />
+      </div>
+      {ticketAlertToasts.length > 0 && (
+        <div className="ticket-alert-toast-stack" role="status" aria-live="polite">
+          {ticketAlertToasts.map((toast) => (
+            <article className={`ticket-alert-toast ${toast.severity === "OVERDUE" ? "overdue" : "today"}`} key={toast.key}>
+              <div className="ticket-alert-toast-copy">
+                <strong>{toast.title}</strong>
+                <p>{toast.message}</p>
+              </div>
+              <div className="ticket-alert-toast-actions">
+                <button
+                  className="ticket-alert-toast-view"
+                  type="button"
+                  onClick={() => {
+                    openProjectTaskFromAlert(toast.taskId);
+                    dismissTicketToast(toast.key);
+                  }}
+                >
+                  View
+                </button>
+                <button
+                  className="ticket-alert-toast-close"
+                  type="button"
+                  onClick={() => dismissTicketToast(toast.key)}
+                  aria-label="Dismiss alert"
+                >
+                  <NavIcon name="close" />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+      <TaskAlertDrawer
+        open={Boolean(alertDrawerTask)}
+        task={alertDrawerTask}
+        mode={taskDrawerState?.mode ?? "edit"}
+        onClose={() => setTaskDrawerState(null)}
+        onUpdateTask={handleUpdateTask}
+        onViewInProject={openTaskInProject}
+      />
     </div>
   );
 }

@@ -1,26 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Expense, ExpenseInput, ExpenseTallyDetails, Task, WorkerProfile, WorkerRole } from "../types/models";
-import { api } from "../utils/api";
+import type { Expense, ExpenseInput, ExpenseTallyDetails, PotentialDuplicateExpense, Task, WorkerProfile, WorkerRole } from "../types/models";
+import { api, isApiError } from "../utils/api";
 import { formatCurrency, formatDate } from "../utils/format";
-import { buildScopeLabel, getCurrentPhase, getCurrentSection, getPhaseNodes, getSectionsForPhase } from "../utils/workBreakdown";
+import {
+  buildScopeLabel,
+  getCurrentPhase,
+  getCurrentSection,
+  getPhaseNodes,
+  getSectionsForPhase,
+  getSubsectionsForSection
+} from "../utils/workBreakdown";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
-  isMaterialsCategory,
-  materialPresetStorageKey,
-  mergePresetsWithExpenses,
-  parseStoredMaterialPresets,
-  resolveMaterialName,
-  toPresetId,
-  type MaterialPreset
+  isMaterialsCategory
 } from "../utils/materialPresets";
 
 type ExpenseSectionProps = {
   expenses: Expense[];
   tasks: Task[];
+  globalPhaseTaskId?: string;
+  globalPhaseName?: string;
   canDeleteExpense: boolean;
   onAddExpense: (payload: ExpenseInput) => Promise<void>;
   onUpdateExpense: (id: string, payload: Partial<ExpenseInput>) => Promise<void>;
   onDeleteExpense: (id: string) => Promise<void>;
+  onOpenLinkedTask?: (taskId: string) => void;
 };
 
 type ExpenseVisual = {
@@ -33,6 +37,19 @@ type OptionalExpenseColumns = {
   unit: boolean;
   unitCost: boolean;
 };
+
+type DuplicateWarningState =
+  | {
+      mode: "create";
+      payload: ExpenseInput;
+      duplicates: PotentialDuplicateExpense[];
+    }
+  | {
+      mode: "update";
+      expenseId: string;
+      payload: Partial<ExpenseInput>;
+      duplicates: PotentialDuplicateExpense[];
+    };
 
 const expenseColumnSettingsKey = "dream_home_expense_optional_columns_v1";
 
@@ -81,6 +98,8 @@ const defaultForm: ExpenseInput = {
   phaseTaskId: "",
   section: "",
   sectionTaskId: "",
+  subsection: "",
+  subsectionTaskId: "",
   notes: "",
   workerRole: "OTHER"
 };
@@ -346,10 +365,13 @@ function getExpenseVisual(category: string, name: string): ExpenseVisual {
 export function ExpenseSection({
   expenses,
   tasks,
+  globalPhaseTaskId,
+  globalPhaseName,
   canDeleteExpense,
   onAddExpense,
   onUpdateExpense,
-  onDeleteExpense
+  onDeleteExpense,
+  onOpenLinkedTask
 }: ExpenseSectionProps) {
   const [form, setForm] = useState<ExpenseInput>(defaultForm);
   const [search, setSearch] = useState("");
@@ -373,10 +395,15 @@ export function ExpenseSection({
   const [detailData, setDetailData] = useState<ExpenseTallyDetails | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [expenseActionError, setExpenseActionError] = useState("");
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicateWarningState | null>(null);
+  const [confirmingDuplicate, setConfirmingDuplicate] = useState(false);
   const phaseNodes = useMemo(() => getPhaseNodes(tasks), [tasks]);
   const currentPhase = useMemo(() => getCurrentPhase(tasks), [tasks]);
   const formSections = useMemo(() => getSectionsForPhase(tasks, form.phaseTaskId), [tasks, form.phaseTaskId]);
+  const formSubsections = useMemo(() => getSubsectionsForSection(tasks, form.sectionTaskId), [tasks, form.sectionTaskId]);
   const editSections = useMemo(() => getSectionsForPhase(tasks, editForm?.phaseTaskId), [tasks, editForm?.phaseTaskId]);
+  const editSubsections = useMemo(() => getSubsectionsForSection(tasks, editForm?.sectionTaskId), [tasks, editForm?.sectionTaskId]);
 
   const categories = useMemo(() => {
     return Array.from(new Set(expenses.map((expense) => normalizeExpenseCategory(expense.category)))).sort();
@@ -391,11 +418,17 @@ export function ExpenseSection({
   }, [categoryOptions]);
 
   const filteredExpenses = useMemo(() => {
-    return expenses.filter((expense) => {
-      const matchesSearch = expense.name.toLowerCase().includes(search.toLowerCase());
-      const matchesCategory = category === "All" || normalizeExpenseCategory(expense.category) === category;
-      return matchesSearch && matchesCategory;
-    });
+    return expenses
+      .filter((expense) => {
+        const matchesSearch = expense.name.toLowerCase().includes(search.toLowerCase());
+        const matchesCategory = category === "All" || normalizeExpenseCategory(expense.category) === category;
+        return matchesSearch && matchesCategory;
+      })
+      .sort((left, right) => {
+        const leftAddedAt = new Date(left.createdAt || left.date).getTime();
+        const rightAddedAt = new Date(right.createdAt || right.date).getTime();
+        return rightAddedAt - leftAddedAt;
+      });
   }, [expenses, search, category]);
 
   const vendorOptions = useMemo(() => {
@@ -429,6 +462,10 @@ export function ExpenseSection({
 
   function findSectionIdByName(phaseId?: string, sectionName?: string): string {
     return getSectionsForPhase(tasks, phaseId).find((section) => section.title === (sectionName ?? "").trim())?._id ?? "";
+  }
+
+  function findSubsectionIdByName(sectionId?: string, subsectionName?: string): string {
+    return getSubsectionsForSection(tasks, sectionId).find((task) => task.title === (subsectionName ?? "").trim())?._id ?? "";
   }
 
   async function loadWorkers() {
@@ -486,25 +523,31 @@ export function ExpenseSection({
     }
 
     setForm((current) => {
-      if (current.phaseTaskId) {
+      if (current.phaseTaskId && (!globalPhaseTaskId || current.phaseTaskId === globalPhaseTaskId)) {
         return current;
       }
 
-      const nextPhase = currentPhase ?? phaseNodes[0];
+      const nextPhase =
+        phaseNodes.find((phase) => phase._id === globalPhaseTaskId) ??
+        currentPhase ??
+        phaseNodes[0];
       if (!nextPhase) {
         return current;
       }
 
       const nextSection = getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0];
+      const nextSubsection = getSubsectionsForSection(tasks, nextSection?._id)[0];
       return {
         ...current,
-        phase: nextPhase.title,
+        phase: globalPhaseName || nextPhase.title,
         phaseTaskId: nextPhase._id,
         section: nextSection?.title ?? "",
-        sectionTaskId: nextSection?._id ?? ""
+        sectionTaskId: nextSection?._id ?? "",
+        subsection: nextSubsection?.title ?? "",
+        subsectionTaskId: nextSubsection?._id ?? ""
       };
     });
-  }, [currentPhase, phaseNodes, tasks]);
+  }, [currentPhase, globalPhaseName, globalPhaseTaskId, phaseNodes, tasks]);
 
   useEffect(() => {
     try {
@@ -528,35 +571,42 @@ export function ExpenseSection({
     localStorage.setItem(expenseColumnSettingsKey, JSON.stringify(optionalColumns));
   }, [optionalColumns]);
 
-  function applyScopeToForm(phaseId: string, sectionId?: string) {
+  function applyScopeToForm(phaseId: string, sectionId?: string, subsectionId?: string) {
     const phaseNode = phaseNodes.find((task) => task._id === phaseId);
     const sectionNode = getSectionsForPhase(tasks, phaseId).find((task) => task._id === sectionId);
+    const subsectionNode = getSubsectionsForSection(tasks, sectionNode?._id).find((task) => task._id === subsectionId);
 
     setForm((current) => ({
       ...current,
       phaseTaskId: phaseNode?._id ?? "",
-      phase: phaseNode?.title ?? "",
+      phase: globalPhaseName || phaseNode?.title || "",
       sectionTaskId: sectionNode?._id ?? "",
-      section: sectionNode?.title ?? ""
+      section: sectionNode?.title ?? "",
+      subsectionTaskId: subsectionNode?._id ?? "",
+      subsection: subsectionNode?.title ?? ""
     }));
   }
 
-  function applyScopeToEditForm(phaseId: string, sectionId?: string) {
+  function applyScopeToEditForm(phaseId: string, sectionId?: string, subsectionId?: string) {
     const phaseNode = phaseNodes.find((task) => task._id === phaseId);
     const sectionNode = getSectionsForPhase(tasks, phaseId).find((task) => task._id === sectionId);
+    const subsectionNode = getSubsectionsForSection(tasks, sectionNode?._id).find((task) => task._id === subsectionId);
 
     setEditForm((current) => ({
       ...(current ?? {}),
       phaseTaskId: phaseNode?._id ?? "",
-      phase: phaseNode?.title ?? "",
+      phase: globalPhaseName || phaseNode?.title || "",
       sectionTaskId: sectionNode?._id ?? "",
-      section: sectionNode?.title ?? ""
+      section: sectionNode?.title ?? "",
+      subsectionTaskId: subsectionNode?._id ?? "",
+      subsection: subsectionNode?.title ?? ""
     }));
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
+    setExpenseActionError("");
 
     try {
       const categoryValue = isMaterialsCategory(form.category)
@@ -573,23 +623,55 @@ export function ExpenseSection({
       };
 
       await onAddExpense(payload);
-      const nextPhase = currentPhase ?? phaseNodes[0];
+      const nextPhase = phaseNodes.find((phase) => phase._id === globalPhaseTaskId) ?? currentPhase ?? phaseNodes[0];
       const nextSection = nextPhase ? getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0] : undefined;
+      const nextSubsection = getSubsectionsForSection(tasks, nextSection?._id)[0];
       setForm({
         ...defaultForm,
-        phase: nextPhase?.title ?? "",
+        phase: globalPhaseName || nextPhase?.title || "",
         phaseTaskId: nextPhase?._id ?? "",
         section: nextSection?.title ?? "",
-        sectionTaskId: nextSection?._id ?? ""
+        sectionTaskId: nextSection?._id ?? "",
+        subsection: nextSubsection?.title ?? "",
+        subsectionTaskId: nextSubsection?._id ?? ""
       });
       setMaterialSubcategory("");
       setShowAddWidget(false);
+    } catch (error) {
+      if (
+        isApiError<{ duplicates?: PotentialDuplicateExpense[] }>(error) &&
+        error.status === 409 &&
+        Array.isArray(error.data?.duplicates)
+      ) {
+        const categoryValue = isMaterialsCategory(form.category)
+          ? buildMaterialsCategory(materialSubcategory || getMaterialSubcategory(form.category))
+          : normalizeExpenseCategory(form.category);
+        const calculatedAmount = computeAmount(form.quantity, form.unitPrice);
+        setDuplicateWarning({
+          mode: "create",
+          payload: {
+            ...form,
+            category: categoryValue,
+            unit: form.unit?.trim() ?? "",
+            quantity: Number(form.quantity ?? 0),
+            unitPrice: Number(form.unitPrice ?? 0),
+            amount: calculatedAmount > 0 ? calculatedAmount : Number(form.amount ?? 0)
+          },
+          duplicates: error.data.duplicates
+        });
+      } else {
+        setExpenseActionError(error instanceof Error ? error.message : "Could not add expense right now.");
+      }
     } finally {
       setSubmitting(false);
     }
   }
 
   function startEdit(expense: Expense) {
+    if (expense.source === "task-complete") {
+      return;
+    }
+
     setEditingId(expense._id);
     setEditForm({
       name: expense.name,
@@ -600,12 +682,20 @@ export function ExpenseSection({
       unit: expense.unit,
       date: expense.date.slice(0, 10),
       vendor: expense.vendor,
-      phase: expense.phase,
-      phaseTaskId: expense.phaseTaskId ?? findPhaseIdByName(expense.phase),
+      phase: globalPhaseName || expense.phase,
+      phaseTaskId: globalPhaseTaskId ?? expense.phaseTaskId ?? findPhaseIdByName(expense.phase),
       section: expense.section ?? "",
       sectionTaskId:
         expense.sectionTaskId ??
         findSectionIdByName(expense.phaseTaskId ?? findPhaseIdByName(expense.phase), expense.section),
+      subsection: expense.subsection ?? "",
+      subsectionTaskId:
+        expense.subsectionTaskId ??
+        findSubsectionIdByName(
+          expense.sectionTaskId ??
+            findSectionIdByName(expense.phaseTaskId ?? findPhaseIdByName(expense.phase), expense.section),
+          expense.subsection
+        ),
       notes: expense.notes,
       workerRole: normalizeWorkerRole(expense.workerRole),
       workerProfileId: expense.workerProfileId
@@ -617,9 +707,71 @@ export function ExpenseSection({
       return;
     }
 
-    await onUpdateExpense(editingId, editForm);
-    setEditingId(null);
-    setEditForm(null);
+    setExpenseActionError("");
+    try {
+      await onUpdateExpense(editingId, editForm);
+      setEditingId(null);
+      setEditForm(null);
+    } catch (error) {
+      if (
+        isApiError<{ duplicates?: PotentialDuplicateExpense[] }>(error) &&
+        error.status === 409 &&
+        Array.isArray(error.data?.duplicates)
+      ) {
+        setDuplicateWarning({
+          mode: "update",
+          expenseId: editingId,
+          payload: editForm,
+          duplicates: error.data.duplicates
+        });
+      } else {
+        setExpenseActionError(error instanceof Error ? error.message : "Could not update expense right now.");
+      }
+    }
+  }
+
+  async function confirmDuplicateExpense() {
+    if (!duplicateWarning) {
+      return;
+    }
+
+    setConfirmingDuplicate(true);
+    setExpenseActionError("");
+    try {
+      if (duplicateWarning.mode === "create") {
+        await onAddExpense({
+          ...duplicateWarning.payload,
+          allowPotentialDuplicate: true
+        });
+        const nextPhase = phaseNodes.find((phase) => phase._id === globalPhaseTaskId) ?? currentPhase ?? phaseNodes[0];
+        const nextSection = nextPhase ? getCurrentSection(tasks, nextPhase._id) ?? getSectionsForPhase(tasks, nextPhase._id)[0] : undefined;
+        const nextSubsection = getSubsectionsForSection(tasks, nextSection?._id)[0];
+        setForm({
+          ...defaultForm,
+          phase: globalPhaseName || nextPhase?.title || "",
+          phaseTaskId: nextPhase?._id ?? "",
+          section: nextSection?.title ?? "",
+          sectionTaskId: nextSection?._id ?? "",
+          subsection: nextSubsection?.title ?? "",
+          subsectionTaskId: nextSubsection?._id ?? ""
+        });
+        setMaterialSubcategory("");
+        setShowAddWidget(false);
+      } else {
+        await onUpdateExpense(duplicateWarning.expenseId, {
+          ...duplicateWarning.payload,
+          allowPotentialDuplicate: true
+        });
+        setEditingId(null);
+        setEditForm(null);
+      }
+
+      setDuplicateWarning(null);
+    } catch (error) {
+      setExpenseActionError(error instanceof Error ? error.message : "Could not save duplicate expense right now.");
+    } finally {
+      setConfirmingDuplicate(false);
+    }
   }
 
   async function confirmDeleteExpense() {
@@ -739,6 +891,7 @@ export function ExpenseSection({
             ))}
           </select>
         </div>
+        {expenseActionError && <p className="error-text">{expenseActionError}</p>}
 
         </div>
 
@@ -760,6 +913,8 @@ export function ExpenseSection({
             <tbody>
               {filteredExpenses.map((expense) => {
                 const isEditing = editingId === expense._id;
+                const isTaskLinkedExpense = expense.source === "task-complete";
+                const linkedTaskId = expense.subsectionTaskId ?? "";
                 const visual = getExpenseVisual(expense.category, expense.name);
                 const workerName = workers.find((worker) => worker._id === expense.workerProfileId)?.name;
                 const editingCategoryValue = editForm?.category ?? expense.category;
@@ -787,26 +942,30 @@ export function ExpenseSection({
                             }
                           />
                           <div className="scope-edit-grid">
-                            <select
-                              value={editForm?.phaseTaskId ?? ""}
-                              onChange={(event) => applyScopeToEditForm(event.target.value)}
-                            >
-                              <option value="">Select phase</option>
-                              {phaseNodes.map((phase) => (
-                                <option key={phase._id} value={phase._id}>
-                                  {phase.title}
-                                </option>
-                              ))}
-                            </select>
+                            <input value={globalPhaseName || editForm?.phase || expense.phase || ""} disabled />
                             <select
                               value={editForm?.sectionTaskId ?? ""}
-                              onChange={(event) => applyScopeToEditForm(editForm?.phaseTaskId ?? "", event.target.value)}
+                              onChange={(event) => applyScopeToEditForm(editForm?.phaseTaskId ?? globalPhaseTaskId ?? "", event.target.value)}
                               disabled={!editForm?.phaseTaskId || editSections.length === 0}
                             >
                               <option value="">{editSections.length > 0 ? "No section" : "No sections"}</option>
                               {editSections.map((section) => (
                                 <option key={section._id} value={section._id}>
                                   {section.title}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={editForm?.subsectionTaskId ?? ""}
+                              onChange={(event) =>
+                                applyScopeToEditForm(editForm?.phaseTaskId ?? globalPhaseTaskId ?? "", editForm?.sectionTaskId ?? "", event.target.value)
+                              }
+                              disabled={!editForm?.sectionTaskId || editSubsections.length === 0}
+                            >
+                              <option value="">{editSubsections.length > 0 ? "No subsection" : "No subsections"}</option>
+                              {editSubsections.map((subsection) => (
+                                <option key={subsection._id} value={subsection._id}>
+                                  {subsection.title}
                                 </option>
                               ))}
                             </select>
@@ -817,7 +976,9 @@ export function ExpenseSection({
                           <span className="expense-icon-wrap"><ExpenseTypeIcon type={visual.type} /></span>
                           <div className="expense-title-text">
                             <strong>{expense.name}</strong>
-                            <span className="muted small-text">{buildScopeLabel(expense.phase, expense.section)}</span>
+                            <span className="muted small-text">{buildScopeLabel(expense.phase, expense.section, expense.subsection)}</span>
+                            {isTaskLinkedExpense && <span className="expense-origin-pill">Task Expense</span>}
+                            {isTaskLinkedExpense && <span className="expense-linked-note">Managed from the linked task</span>}
                             <span className="muted small-text">{visual.label}</span>
                           </div>
                         </div>
@@ -1093,25 +1254,47 @@ export function ExpenseSection({
                                 <ViewIcon />
                               </button>
                             )}
-                            <button
-                              className="icon-btn edit"
-                              type="button"
-                              title="Edit expense"
-                              aria-label={`Edit ${expense.name}`}
-                              onClick={() => startEdit(expense)}
-                            >
-                              <EditIcon />
-                            </button>
-                            {canDeleteExpense && (
-                              <button
-                                className="icon-btn delete"
-                                type="button"
-                                title="Delete expense"
-                                aria-label={`Delete ${expense.name}`}
-                                onClick={() => setPendingDeleteExpense(expense)}
-                              >
-                                <DeleteIcon />
-                              </button>
+                            {!isTaskLinkedExpense ? (
+                              <>
+                                <button
+                                  className="icon-btn edit"
+                                  type="button"
+                                  title="Edit expense"
+                                  aria-label={`Edit ${expense.name}`}
+                                  onClick={() => startEdit(expense)}
+                                >
+                                  <EditIcon />
+                                </button>
+                                {canDeleteExpense && (
+                                  <button
+                                    className="icon-btn delete"
+                                    type="button"
+                                    title="Delete expense"
+                                    aria-label={`Delete ${expense.name}`}
+                                    onClick={() => setPendingDeleteExpense(expense)}
+                                  >
+                                    <DeleteIcon />
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  className="icon-btn edit"
+                                  type="button"
+                                  title="Open linked task"
+                                  aria-label={`Open linked task for ${expense.name}`}
+                                  disabled={!linkedTaskId}
+                                  onClick={() => {
+                                    if (linkedTaskId) {
+                                      onOpenLinkedTask?.(linkedTaskId);
+                                    }
+                                  }}
+                                >
+                                  <EditIcon />
+                                </button>
+                                <span className="expense-readonly-label">Edit from task</span>
+                              </>
                             )}
                           </>
                         )}
@@ -1323,27 +1506,38 @@ export function ExpenseSection({
 
               <label>
                 Phase
-                <select value={form.phaseTaskId ?? ""} onChange={(event) => applyScopeToForm(event.target.value)}>
-                  <option value="">{phaseNodes.length > 0 ? "Select phase" : "No phases yet"}</option>
-                  {phaseNodes.map((phase) => (
-                    <option key={phase._id} value={phase._id}>
-                      {phase.title}
-                    </option>
-                  ))}
-                </select>
+                <input value={globalPhaseName || form.phase || ""} disabled />
               </label>
 
               <label>
                 Section
                 <select
                   value={form.sectionTaskId ?? ""}
-                  onChange={(event) => applyScopeToForm(form.phaseTaskId ?? "", event.target.value)}
+                  onChange={(event) => applyScopeToForm(form.phaseTaskId ?? globalPhaseTaskId ?? "", event.target.value)}
                   disabled={!form.phaseTaskId || formSections.length === 0}
                 >
                   <option value="">{formSections.length > 0 ? "No section" : "No sections"}</option>
                   {formSections.map((section) => (
                     <option key={section._id} value={section._id}>
                       {section.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Subsection
+                <select
+                  value={form.subsectionTaskId ?? ""}
+                  onChange={(event) =>
+                    applyScopeToForm(form.phaseTaskId ?? globalPhaseTaskId ?? "", form.sectionTaskId ?? "", event.target.value)
+                  }
+                  disabled={!form.sectionTaskId || formSubsections.length === 0}
+                >
+                  <option value="">{formSubsections.length > 0 ? "No subsection" : "No subsections"}</option>
+                  {formSubsections.map((subsection) => (
+                    <option key={subsection._id} value={subsection._id}>
+                      {subsection.title}
                     </option>
                   ))}
                 </select>
@@ -1382,6 +1576,25 @@ export function ExpenseSection({
           }
         }}
         onConfirm={confirmDeleteExpense}
+      />
+      <ConfirmDialog
+        open={Boolean(duplicateWarning)}
+        title="Potential Duplicate Expense"
+        message="We found similar expenses. Add or update this expense anyway?"
+        details={(duplicateWarning?.duplicates ?? []).map((duplicate) => {
+          const reasons = duplicate.reasons.join(", ");
+          const dateLabel = formatDate(duplicate.date);
+          return `${duplicate.name} • ${formatCurrency(duplicate.amount)} • ${dateLabel}${duplicate.vendor ? ` • ${duplicate.vendor}` : ""}${reasons ? ` • ${reasons}` : ""}`;
+        })}
+        confirmLabel="Save Anyway"
+        busyLabel="Saving..."
+        busy={confirmingDuplicate}
+        onCancel={() => {
+          if (!confirmingDuplicate) {
+            setDuplicateWarning(null);
+          }
+        }}
+        onConfirm={confirmDuplicateExpense}
       />
 
       <datalist id="expense-vendor-options">

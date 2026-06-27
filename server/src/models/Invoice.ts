@@ -41,6 +41,9 @@ const invoiceSchema = new Schema(
       default: "UNPAID"
     },
     currency: { type: String, default: "USD" },
+    entryCurrency: { type: String, default: "USD" },
+    usdToEntryRate: { type: Number, required: true, min: 0, default: 1 },
+    exchangeRateDate: { type: Date },
     notes: { type: String, default: "", trim: true },
     items: { type: [invoiceItemSchema], default: [] },
     totalAmount: { type: Number, required: true, min: 0 },

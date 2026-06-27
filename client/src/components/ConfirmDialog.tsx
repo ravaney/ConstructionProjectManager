@@ -2,6 +2,7 @@ type ConfirmDialogProps = {
   open: boolean;
   title: string;
   message: string;
+  details?: string[];
   confirmLabel?: string;
   cancelLabel?: string;
   busyLabel?: string;
@@ -25,6 +26,7 @@ export function ConfirmDialog({
   open,
   title,
   message,
+  details,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   busyLabel = "Working...",
@@ -47,6 +49,13 @@ export function ConfirmDialog({
         </div>
 
         <p className="muted">{message}</p>
+        {details && details.length > 0 && (
+          <ul className="confirm-dialog-details">
+            {details.map((detail) => (
+              <li key={detail}>{detail}</li>
+            ))}
+          </ul>
+        )}
 
         <div className="confirm-dialog-actions">
           <button className="btn ghost" type="button" onClick={onCancel} disabled={busy}>

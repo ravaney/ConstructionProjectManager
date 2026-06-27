@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { requireRole } from "../middleware/auth.js";
 import { ExpenseModel } from "../models/Expense.js";
 import { InvoiceModel } from "../models/Invoice.js";
+import { buildChangedFields, buildExpenseSnapshot, recordHistoryEvent } from "../services/history.js";
 import { resolveTaskScope, syncTaskHierarchyState } from "../utils/taskHierarchy.js";
 
 const router = Router();
@@ -22,6 +24,8 @@ const expensePayloadSchema = z.object({
   phaseTaskId: z.string().optional(),
   section: z.string().optional(),
   sectionTaskId: z.string().optional(),
+  subsection: z.string().optional(),
+  subsectionTaskId: z.string().optional(),
   unit: z.string().optional(),
   unitPrice: z.coerce.number().min(0).optional(),
   quantity: z.coerce.number().min(0).optional(),
@@ -30,7 +34,8 @@ const expensePayloadSchema = z.object({
   workerRole: workerRoleSchema.optional(),
   workerProfileId: z.string().optional(),
   invoiceId: z.string().optional(),
-  invoiceNumber: z.string().optional()
+  invoiceNumber: z.string().optional(),
+  allowPotentialDuplicate: z.boolean().optional()
 });
 
 const expenseUpdateSchema = expensePayloadSchema.partial();
@@ -94,6 +99,151 @@ function resolveAmount(quantity: number, unitPrice: number, amount: number): num
   return toMoney(amount);
 }
 
+function normalizeDuplicateText(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function toDateKey(value: string | Date | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function buildExpenseHistoryScope(expense: {
+  phase?: string;
+  phaseTaskId?: unknown;
+  section?: string;
+  sectionTaskId?: unknown;
+  subsection?: string;
+  subsectionTaskId?: unknown;
+}) {
+  return {
+    phase: expense.phase ?? "",
+    phaseTaskId: toIdString(expense.phaseTaskId),
+    section: expense.section ?? "",
+    sectionTaskId: toIdString(expense.sectionTaskId),
+    subsection: expense.subsection ?? "",
+    subsectionTaskId: toIdString(expense.subsectionTaskId)
+  };
+}
+
+function shouldCheckPotentialDuplicates(source?: string): boolean {
+  const normalized = normalizeDuplicateText(source);
+  return normalized === "" || normalized === "manual" || normalized === "csv-import";
+}
+
+async function findPotentialDuplicateExpenses(
+  input: {
+    name?: string;
+    amount?: number;
+    date?: string | Date;
+    vendor?: string;
+    phase?: string;
+    phaseTaskId?: string;
+    section?: string;
+    sectionTaskId?: string;
+    invoiceNumber?: string;
+  },
+  excludeId?: string
+) {
+  const normalizedName = normalizeDuplicateText(input.name);
+  const normalizedVendor = normalizeDuplicateText(input.vendor);
+  const normalizedInvoiceNumber = normalizeDuplicateText(input.invoiceNumber);
+  const normalizedPhase = input.phaseTaskId || normalizeDuplicateText(input.phase);
+  const normalizedSection = input.sectionTaskId || normalizeDuplicateText(input.section);
+  const amount = Number(input.amount ?? 0);
+  const dateKey = toDateKey(input.date);
+
+  if (!normalizedName && !normalizedInvoiceNumber) {
+    return [];
+  }
+
+  const query: Record<string, unknown> = {};
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+
+  const candidates = await ExpenseModel.find(query).sort({ date: -1, createdAt: -1 }).limit(80);
+
+  return candidates
+    .map((candidate) => {
+      let score = 0;
+      const matches: string[] = [];
+
+      if (normalizedInvoiceNumber && normalizeDuplicateText(candidate.invoiceNumber) === normalizedInvoiceNumber) {
+        score += 6;
+        matches.push("same invoice number");
+      }
+
+      if (normalizedName && normalizeDuplicateText(candidate.name) === normalizedName) {
+        score += 4;
+        matches.push("same item");
+      }
+
+      if (Math.abs(Number(candidate.amount ?? 0) - amount) < 0.01) {
+        score += 3;
+        matches.push("same amount");
+      }
+
+      if (dateKey && toDateKey(candidate.date) === dateKey) {
+        score += 2;
+        matches.push("same date");
+      }
+
+      if (normalizedVendor && normalizeDuplicateText(candidate.vendor) === normalizedVendor) {
+        score += 2;
+        matches.push("same vendor");
+      }
+
+      const candidatePhase = toIdString(candidate.phaseTaskId) || normalizeDuplicateText(candidate.phase);
+      if (normalizedPhase && candidatePhase === normalizedPhase) {
+        score += 1;
+        matches.push("same phase");
+      }
+
+      const candidateSection = toIdString(candidate.sectionTaskId) || normalizeDuplicateText(candidate.section);
+      if (normalizedSection && candidateSection === normalizedSection) {
+        score += 1;
+        matches.push("same section");
+      }
+
+      const exactMatch =
+        matches.includes("same item") &&
+        matches.includes("same amount") &&
+        matches.includes("same date") &&
+        (matches.includes("same vendor") || matches.includes("same invoice number"));
+
+      return {
+        candidate,
+        exactMatch,
+        score,
+        matches
+      };
+    })
+    .filter((entry) => entry.exactMatch || entry.score >= 7)
+    .sort((left, right) => Number(right.exactMatch) - Number(left.exactMatch) || right.score - left.score)
+    .slice(0, 5)
+    .map((entry) => ({
+      expenseId: String(entry.candidate._id),
+      name: entry.candidate.name,
+      amount: Number(entry.candidate.amount ?? 0),
+      date: entry.candidate.date?.toISOString?.() ?? new Date(entry.candidate.date).toISOString(),
+      vendor: entry.candidate.vendor ?? "",
+      phase: entry.candidate.phase ?? "",
+      section: entry.candidate.section ?? "",
+      score: entry.score,
+      exactMatch: entry.exactMatch,
+      reasons: entry.matches
+    }));
+}
+
 router.get("/", async (req, res, next) => {
   try {
     await syncTaskHierarchyState();
@@ -126,7 +276,7 @@ router.get("/", async (req, res, next) => {
       }
     }
 
-    const expenses = await ExpenseModel.find(filters).sort({ date: -1, createdAt: -1 });
+    const expenses = await ExpenseModel.find(filters).sort({ createdAt: -1, _id: -1 });
     res.json({
       expenses: expenses.map((expense) => {
         const document = expense.toObject();
@@ -254,8 +404,29 @@ router.get("/:id/tally-details", async (req, res, next) => {
 
 router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
-    const payload = expensePayloadSchema.parse(req.body);
+    const operationId = randomUUID();
+    const { allowPotentialDuplicate, ...payload } = expensePayloadSchema.parse(req.body);
     const scope = await resolveTaskScope(payload);
+    const normalizedAmount = resolveAmount(Number(payload.quantity ?? 0), Number(payload.unitPrice ?? 0), Number(payload.amount ?? 0));
+    if (!allowPotentialDuplicate && shouldCheckPotentialDuplicates(payload.source)) {
+      const duplicates = await findPotentialDuplicateExpenses({
+        ...payload,
+        amount: normalizedAmount,
+        date: payload.date,
+        phase: scope.phase,
+        phaseTaskId: scope.phaseTaskId,
+        section: scope.section,
+        sectionTaskId: scope.sectionTaskId
+      });
+      if (duplicates.length > 0) {
+        res.status(409).json({
+          message: "Potential duplicate expenses found",
+          duplicates
+        });
+        return;
+      }
+    }
+
     const expense = await ExpenseModel.create({
       ...payload,
       date: payload.date ? new Date(payload.date) : new Date(),
@@ -264,6 +435,8 @@ router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
       phaseTaskId: scope.phaseTaskId,
       section: scope.section,
       sectionTaskId: scope.sectionTaskId,
+      subsection: scope.subsection,
+      subsectionTaskId: scope.subsectionTaskId,
       unit: payload.unit ?? "",
       unitPrice: payload.unitPrice ?? 0,
       quantity: payload.quantity ?? 0,
@@ -272,6 +445,23 @@ router.post("/", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
       workerRole: payload.workerRole ?? "OTHER",
       invoiceNumber: payload.invoiceNumber ?? "",
       createdBy: req.user?.id
+    });
+    const afterSnapshot = buildExpenseSnapshot(expense);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "EXPENSE",
+      entityId: String(expense._id),
+      entityLabel: expense.name,
+      action: "CREATE",
+      summary: `Expense ${expense.name} created`,
+      actor: req.user,
+      scope: buildExpenseHistoryScope(expense),
+      after: afterSnapshot,
+      moneyImpact: {
+        label: "Expense Amount",
+        before: 0,
+        after: Number(afterSnapshot.amount ?? 0)
+      }
     });
 
     res.status(201).json({ expense });
@@ -299,6 +489,8 @@ router.post("/bulk", requireRole("OWNER"), async (req, res, next) => {
         phaseTaskId: scope.phaseTaskId,
         section: scope.section,
         sectionTaskId: scope.sectionTaskId,
+        subsection: scope.subsection,
+        subsectionTaskId: scope.subsectionTaskId,
         unit: expense.unit ?? "",
         unitPrice: expense.unitPrice ?? 0,
         quantity: expense.quantity ?? 0,
@@ -319,6 +511,7 @@ router.post("/bulk", requireRole("OWNER"), async (req, res, next) => {
 
 router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) => {
   try {
+    const operationId = randomUUID();
     const payload = expenseUpdateSchema.parse(req.body);
     const updatePayload: Record<string, unknown> = { ...payload };
     const existingExpense = await ExpenseModel.findById(req.params.id);
@@ -328,11 +521,24 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
       return;
     }
 
+    if (existingExpense.source === "task-complete") {
+      res.status(409).json({
+        message: "Task-linked expenses are read-only here. Edit the linked task to update this expense."
+      });
+      return;
+    }
+
+    const beforeSnapshot = buildExpenseSnapshot(existingExpense);
+    const allowPotentialDuplicate = Boolean(updatePayload.allowPotentialDuplicate);
+    delete updatePayload.allowPotentialDuplicate;
+
     const scope = await resolveTaskScope({
       phaseTaskId: payload.phaseTaskId ?? toIdString(existingExpense.phaseTaskId),
       sectionTaskId: payload.sectionTaskId ?? toIdString(existingExpense.sectionTaskId),
+      subsectionTaskId: payload.subsectionTaskId ?? toIdString(existingExpense.subsectionTaskId),
       phase: payload.phase ?? existingExpense.phase,
-      section: payload.section ?? existingExpense.section
+      section: payload.section ?? existingExpense.section,
+      subsection: payload.subsection ?? existingExpense.subsection
     });
 
     if (payload.date) {
@@ -343,10 +549,69 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
     updatePayload.phaseTaskId = scope.phaseTaskId;
     updatePayload.section = scope.section;
     updatePayload.sectionTaskId = scope.sectionTaskId;
+    updatePayload.subsection = scope.subsection;
+    updatePayload.subsectionTaskId = scope.subsectionTaskId;
+
+    const nextAmount = resolveAmount(
+      Number(updatePayload.quantity ?? existingExpense.quantity ?? 0),
+      Number(updatePayload.unitPrice ?? existingExpense.unitPrice ?? 0),
+      Number(updatePayload.amount ?? existingExpense.amount ?? 0)
+    );
+    if (!allowPotentialDuplicate && shouldCheckPotentialDuplicates(String(updatePayload.source ?? existingExpense.source ?? ""))) {
+      const duplicates = await findPotentialDuplicateExpenses(
+        {
+          name: String(updatePayload.name ?? existingExpense.name ?? ""),
+          amount: nextAmount,
+          date: (updatePayload.date as Date | undefined) ?? existingExpense.date,
+          vendor: String(updatePayload.vendor ?? existingExpense.vendor ?? ""),
+          phase: scope.phase,
+          phaseTaskId: scope.phaseTaskId,
+          section: scope.section,
+          sectionTaskId: scope.sectionTaskId,
+          invoiceNumber: String(updatePayload.invoiceNumber ?? existingExpense.invoiceNumber ?? "")
+        },
+        req.params.id
+      );
+      if (duplicates.length > 0) {
+        res.status(409).json({
+          message: "Potential duplicate expenses found",
+          duplicates
+        });
+        return;
+      }
+    }
 
     const expense = await ExpenseModel.findByIdAndUpdate(req.params.id, updatePayload, {
       new: true
     });
+    if (expense) {
+      const afterSnapshot = buildExpenseSnapshot(expense);
+      const changedFields = buildChangedFields(beforeSnapshot, afterSnapshot);
+      await recordHistoryEvent({
+        operationId,
+        entityType: "EXPENSE",
+        entityId: String(expense._id),
+        entityLabel: expense.name,
+        action: "UPDATE",
+        summary:
+          beforeSnapshot.amount !== afterSnapshot.amount
+            ? `Expense ${expense.name} amount changed from ${toMoney(Number(beforeSnapshot.amount ?? 0))} to ${toMoney(Number(afterSnapshot.amount ?? 0))}`
+            : `Expense ${expense.name} updated`,
+        actor: req.user,
+        scope: buildExpenseHistoryScope(expense),
+        before: beforeSnapshot,
+        after: afterSnapshot,
+        changedFields,
+        moneyImpact:
+          beforeSnapshot.amount !== afterSnapshot.amount
+            ? {
+                label: "Expense Amount",
+                before: Number(beforeSnapshot.amount ?? 0),
+                after: Number(afterSnapshot.amount ?? 0)
+              }
+            : undefined
+      });
+    }
 
     res.json({ expense });
   } catch (error) {
@@ -356,12 +621,40 @@ router.put("/:id", requireRole("OWNER", "CONTRACTOR"), async (req, res, next) =>
 
 router.delete("/:id", requireRole("OWNER"), async (req, res, next) => {
   try {
-    const deleted = await ExpenseModel.findByIdAndDelete(req.params.id);
+    const operationId = randomUUID();
+    const existingExpense = await ExpenseModel.findById(req.params.id);
 
-    if (!deleted) {
+    if (!existingExpense) {
       res.status(404).json({ message: "Expense not found" });
       return;
     }
+
+    if (existingExpense.source === "task-complete") {
+      res.status(409).json({
+        message: "Task-linked expenses cannot be deleted here. Edit or remove the linked task instead."
+      });
+      return;
+    }
+
+    const beforeSnapshot = buildExpenseSnapshot(existingExpense);
+
+    await ExpenseModel.findByIdAndDelete(req.params.id);
+    await recordHistoryEvent({
+      operationId,
+      entityType: "EXPENSE",
+      entityId: String(existingExpense._id),
+      entityLabel: existingExpense.name,
+      action: "DELETE",
+      summary: `Expense ${existingExpense.name} deleted`,
+      actor: req.user,
+      scope: buildExpenseHistoryScope(existingExpense),
+      before: beforeSnapshot,
+      moneyImpact: {
+        label: "Expense Amount",
+        before: Number(beforeSnapshot.amount ?? 0),
+        after: 0
+      }
+    });
 
     res.status(204).send();
   } catch (error) {

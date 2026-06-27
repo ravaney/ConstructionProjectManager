@@ -1,13 +1,28 @@
 import type {
+  AssistantChatMessage,
+  AssistantChatResponse,
   AppUser,
   Attachment,
   AuthResponse,
   DashboardSummary,
+  EstimateGroup,
+  EstimateGroupInput,
+  EstimateGroupUpdate,
   Expense,
   ExpenseInput,
   ExpenseTallyDetails,
+  GeneratedTaskPlan,
+  HistoryAction,
+  HistoryEntityType,
+  HistoryEntry,
   Invoice,
   InvoiceInput,
+  JmdRateQuote,
+  MaterialPreset,
+  PhaseAnalysisApplyResult,
+  PhaseAnalysisOperation,
+  PhaseAnalysisPreview,
+  PhaseAnalysisSuggestionsResult,
   Project,
   ReportAlert,
   Task,
@@ -54,6 +69,24 @@ function buildHeaders(init?: RequestInit): Headers {
   return headers;
 }
 
+export class ApiError<T = unknown> extends Error {
+  status: number;
+  data?: T;
+  rawBody: string;
+
+  constructor(message: string, status: number, data?: T, rawBody = "") {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+    this.rawBody = rawBody;
+  }
+}
+
+export function isApiError<T = unknown>(error: unknown): error is ApiError<T> {
+  return error instanceof ApiError;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -61,8 +94,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || `HTTP ${response.status}`);
+    const rawBody = await response.text();
+    let data: unknown;
+
+    if (rawBody) {
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        data = undefined;
+      }
+    }
+
+    const message =
+      typeof data === "object" && data !== null && "message" in data && typeof (data as { message?: unknown }).message === "string"
+        ? ((data as { message: string }).message || `HTTP ${response.status}`)
+        : rawBody || `HTTP ${response.status}`;
+
+    throw new ApiError(message, response.status, data, rawBody);
   }
 
   if (response.status === 204) {
@@ -78,8 +126,8 @@ async function requestBlob(path: string): Promise<Blob> {
   });
 
   if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || `HTTP ${response.status}`);
+    const rawBody = await response.text();
+    throw new ApiError(rawBody || `HTTP ${response.status}`, response.status, undefined, rawBody);
   }
 
   return response.blob();
@@ -130,6 +178,54 @@ export const api = {
     }),
 
   getSummary: () => request<DashboardSummary>("/dashboard/summary"),
+  chatWithAssistant: (payload: { messages: Array<Pick<AssistantChatMessage, "role" | "content">>; activeTab?: string; model?: string }) =>
+    request<AssistantChatResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  previewPhaseAnalysis: (payload: { phaseTaskId: string; instruction: string; model?: string }) =>
+    request<PhaseAnalysisPreview>("/assistant/phase-analysis/preview", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  getPhaseAnalysisSuggestions: (payload: { phaseTaskId: string; model?: string }) =>
+    request<PhaseAnalysisSuggestionsResult>("/assistant/phase-analysis/suggestions", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  applyPhaseAnalysis: (payload: { phaseTaskId: string; summary: string; operations: PhaseAnalysisOperation[] }) =>
+    request<PhaseAnalysisApplyResult>("/assistant/phase-analysis/apply", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  getProjectFxRate: (currency = "USD", date?: string) => {
+    const params = new URLSearchParams({ currency });
+    if (date) {
+      params.set("date", date);
+    }
+
+    return request<{ quote: JmdRateQuote }>(`/project/fx-rate?${params.toString()}`);
+  },
+  getMaterialPresets: () => request<{ presets: MaterialPreset[] }>("/material-presets"),
+  migrateMaterialPresets: (payload: { presets: MaterialPreset[]; removedPresetIds: string[] }) =>
+    request<{ presets: MaterialPreset[] }>("/material-presets/migrate", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  createMaterialPreset: (payload: { name: string; unit?: string; unitPrice?: number }) =>
+    request<{ preset: MaterialPreset }>("/material-presets", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateMaterialPreset: (id: string, payload: { name?: string; unit?: string; unitPrice?: number }) =>
+    request<{ preset: MaterialPreset }>(`/material-presets/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteMaterialPreset: (id: string) =>
+    request<void>(`/material-presets/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    }),
 
   getWorkers: () => request<{ workers: WorkerProfile[] }>("/workers"),
   createWorker: (payload: WorkerProfileInput) =>
@@ -164,6 +260,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  reorderTasks: (payload: { sectionTaskId: string; taskIds: string[] }) =>
+    request<{ reorderedCount: number }>("/tasks/reorder", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   updateExpense: (id: string, payload: Partial<ExpenseInput>) =>
     request<{ expense: Expense }>(`/expenses/${id}`, {
       method: "PUT",
@@ -179,9 +280,67 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ expenses })
     }),
+  getHistory: (filters?: {
+    entityType?: HistoryEntityType | "ALL";
+    action?: HistoryAction | "ALL";
+    search?: string;
+    moneyOnly?: boolean;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }) => {
+    const params = new URLSearchParams();
+    if (filters?.entityType) {
+      params.set("entityType", filters.entityType);
+    }
+    if (filters?.action) {
+      params.set("action", filters.action);
+    }
+    if (filters?.search?.trim()) {
+      params.set("search", filters.search.trim());
+    }
+    if (typeof filters?.moneyOnly === "boolean") {
+      params.set("moneyOnly", String(filters.moneyOnly));
+    }
+    if (filters?.from) {
+      params.set("from", filters.from);
+    }
+    if (filters?.to) {
+      params.set("to", filters.to);
+    }
+    if (typeof filters?.limit === "number") {
+      params.set("limit", String(filters.limit));
+    }
+
+    const query = params.toString();
+    return request<{ entries: HistoryEntry[] }>(`/history${query ? `?${query}` : ""}`);
+  },
+  getEstimateGroups: (filters?: { sectionTaskId?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.sectionTaskId?.trim()) {
+      params.set("sectionTaskId", filters.sectionTaskId.trim());
+    }
+    const query = params.toString();
+    return request<{ estimateGroups: EstimateGroup[]; repairedPaymentExpenseCount?: number }>(`/estimate-groups${query ? `?${query}` : ""}`);
+  },
+  createEstimateGroup: (payload: EstimateGroupInput) =>
+    request<{ estimateGroup: EstimateGroup }>("/estimate-groups", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateEstimateGroup: (id: string, payload: EstimateGroupUpdate) =>
+    request<{ estimateGroup: EstimateGroup }>(`/estimate-groups/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteEstimateGroup: (id: string) =>
+    request<void>(`/estimate-groups/${id}`, {
+      method: "DELETE"
+    }),
 
   getInvoices: (status: "ALL" | "UNPAID" | "PARTIALLY_PAID" | "PAID" = "ALL") =>
     request<{ invoices: Invoice[] }>(`/invoices?status=${encodeURIComponent(status)}`),
+  getNextInvoiceNumber: () => request<{ invoiceNumber: string }>("/invoices/next-number"),
   createInvoice: (payload: InvoiceInput) =>
     request<{ invoice: Invoice }>("/invoices", {
       method: "POST",
@@ -192,9 +351,23 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
+  deleteInvoice: (id: string) =>
+    request<void>(`/invoices/${id}`, {
+      method: "DELETE"
+    }),
   markInvoicePaid: (
     id: string,
-    payload?: { paidDate?: string; phase?: string; phaseTaskId?: string; section?: string; sectionTaskId?: string; notes?: string; itemIndexes?: number[] }
+    payload?: {
+      paidDate?: string;
+      phase?: string;
+      phaseTaskId?: string;
+      section?: string;
+      sectionTaskId?: string;
+      subsection?: string;
+      subsectionTaskId?: string;
+      notes?: string;
+      itemIndexes?: number[];
+    }
   ) =>
     request<{ invoice: Invoice; createdExpenses: number; mergedTallies?: number; ignoredItems?: number; newlyPaidItems?: number; alreadyPaidItems?: number; remainingUnpaidItems?: number }>(`/invoices/${id}/mark-paid`, {
       method: "PATCH",
@@ -216,15 +389,43 @@ export const api = {
     request<void>(`/tasks/${id}`, {
       method: "DELETE"
     }),
+  clearAllPhases: () =>
+    request<{ deleted: { phases: number; sections: number; tasks: number } }>("/tasks/clear-phases", {
+      method: "DELETE"
+    }),
+  generateTaskPlan: (payload: { prompt: string; maxPhases?: number }) =>
+    request<{ plan: GeneratedTaskPlan; provider: "openai" | "fallback"; warning?: string }>("/tasks/generate-plan", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  buildTaskPlan: (payload: { plan: GeneratedTaskPlan }) =>
+    request<{ created: { phases: number; sections: number; tasks: number } }>("/tasks/build-plan", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
 
   getProject: () => request<{ project: Project }>("/project"),
-  updateProject: (payload: { totalBudget: number; name?: string; phase?: string; currency?: string; notes?: string }) =>
+  updateProject: (payload: {
+    totalBudget?: number;
+    name?: string;
+    phase?: string;
+    currency?: string;
+    notes?: string;
+    floorPlanMarkup?: {
+      plans?: Array<{
+        attachmentId: string;
+        name: string;
+        strokes: Array<{ color: string; width: number; points: Array<{ x: number; y: number }> }>;
+      }>;
+      strokes?: Array<{ color: string; width: number; points: Array<{ x: number; y: number }> }>;
+    };
+  }) =>
     request<{ project: Project }>("/project", {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
 
-  getAttachments: (entityType: "expense" | "task", entityId?: string) => {
+  getAttachments: (entityType: "expense" | "task" | "project", entityId?: string) => {
     const params = new URLSearchParams({ entityType });
     if (entityId) {
       params.set("entityId", entityId);
@@ -232,7 +433,7 @@ export const api = {
 
     return request<{ attachments: Attachment[] }>(`/attachments?${params.toString()}`);
   },
-  uploadAttachment: (payload: { entityType: "expense" | "task"; entityId: string; file: File }) => {
+  uploadAttachment: (payload: { entityType: "expense" | "task" | "project"; entityId: string; file: File }) => {
     const form = new FormData();
     form.set("entityType", payload.entityType);
     form.set("entityId", payload.entityId);

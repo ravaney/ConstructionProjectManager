@@ -23,6 +23,14 @@ export function getSectionsForPhase(tasks: Task[], phaseId?: string): Task[] {
   return sortNodes(tasks.filter((task) => task.nodeType === "SECTION" && task.parentTaskId === phaseId));
 }
 
+export function getSubsectionsForSection(tasks: Task[], sectionId?: string): Task[] {
+  if (!sectionId) {
+    return [];
+  }
+
+  return sortNodes(tasks.filter((task) => task.nodeType === "TASK" && task.parentTaskId === sectionId));
+}
+
 export function getChildTasks(tasks: Task[], parentTaskId?: string): Task[] {
   if (!parentTaskId) {
     return [];
@@ -47,13 +55,18 @@ export function getCurrentSection(tasks: Task[], phaseId?: string): Task | undef
   return getSectionsForPhase(tasks, phaseId).find((section) => section.status !== "DONE");
 }
 
-export function buildScopeLabel(phase?: string, section?: string): string {
+export function buildScopeLabel(phase?: string, section?: string, subsection?: string): string {
   const normalizedPhase = (phase ?? "").trim();
   const normalizedSection = (section ?? "").trim();
+  const normalizedSubsection = (subsection ?? "").trim();
+
+  if (normalizedPhase && normalizedSection && normalizedSubsection) {
+    return `${normalizedPhase} / ${normalizedSection} / ${normalizedSubsection}`;
+  }
 
   if (normalizedPhase && normalizedSection) {
     return `${normalizedPhase} / ${normalizedSection}`;
   }
 
-  return normalizedPhase || normalizedSection || "Unassigned";
+  return normalizedPhase || normalizedSection || normalizedSubsection || "Unassigned";
 }

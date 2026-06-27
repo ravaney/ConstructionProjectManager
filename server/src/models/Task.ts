@@ -20,6 +20,10 @@ const taskSchema = new Schema(
       default: "PLANNED"
     },
     owner: { type: String, default: "", trim: true },
+    plannedStartDate: { type: Date },
+    plannedEndDate: { type: Date },
+    actualStartDate: { type: Date },
+    actualEndDate: { type: Date },
     dueDate: { type: Date },
     priority: {
       type: String,
@@ -28,6 +32,8 @@ const taskSchema = new Schema(
     },
     budgetImpact: { type: Number, default: 0, min: 0 },
     estimateAmount: { type: Number, default: 0, min: 0 },
+    estimateGroupId: { type: Schema.Types.ObjectId, ref: "EstimateGroup" },
+    completionExpenseId: { type: Schema.Types.ObjectId, ref: "Expense" },
     sortOrder: { type: Number, default: 0 },
     closedAt: { type: Date },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" }

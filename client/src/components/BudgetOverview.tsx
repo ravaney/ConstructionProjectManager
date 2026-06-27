@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DashboardSummary, Task, TaskStatus } from "../types/models";
+import type { DashboardSummary, HistoryEntry, Task, TaskStatus } from "../types/models";
+import { api } from "../utils/api";
 import { formatCurrency } from "../utils/format";
+import { getTaskStatusLabel } from "../utils/taskStatus";
 import { getChildTasks, getCurrentPhase, getPhaseNodes, getSectionsForPhase } from "../utils/workBreakdown";
 
 type BudgetOverviewProps = {
@@ -9,12 +11,6 @@ type BudgetOverviewProps = {
 };
 
 const chartPalette = ["#e76f72", "#7f6a8e", "#d88a66", "#c9a45d", "#8a7cc4", "#a5717e"];
-const taskStatusColors: Record<TaskStatus, string> = {
-  PLANNED: "#c6bcd0",
-  IN_PROGRESS: "#e76f72",
-  BLOCKED: "#d3915f",
-  DONE: "#8b7099"
-};
 const summarySegmentColors = {
   materials: "#4fb4ff",
   land: "#f1c36d",
@@ -23,58 +19,256 @@ const summarySegmentColors = {
   other: "#7f93a6",
   remaining: "#69d68f"
 } as const;
-const phaseExpenseColors: Record<TaskStatus, string> = {
-  PLANNED: "#6f7f90",
-  IN_PROGRESS: "#4fb4ff",
-  BLOCKED: "#f1c36d",
-  DONE: "#69d68f"
+
+type MoneyFeedTone = keyof Pick<typeof summarySegmentColors, "materials" | "land" | "labour" | "equipment" | "other">;
+type MoneyFeedCategory = {
+  tone: MoneyFeedTone;
+  label: "Materials" | "Labour" | "Equipment" | "Land" | "Other";
 };
 
-function formatTaskStatusLabel(status: TaskStatus): string {
-  return status
-    .toLowerCase()
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+function sortTasks(nodes: Task[]): Task[] {
+  return [...nodes].sort((left, right) => {
+    const orderDiff = left.sortOrder - right.sortOrder;
+    if (orderDiff !== 0) {
+      return orderDiff;
+    }
+
+    return left.title.localeCompare(right.title);
+  });
 }
 
-function canDrillIntoNode(status: TaskStatus): boolean {
-  return status === "IN_PROGRESS" || status === "DONE" || status === "BLOCKED";
+function dedupeById(nodes: Task[]): Task[] {
+  const map = new Map(nodes.map((node) => [node._id, node]));
+  return sortTasks(Array.from(map.values()));
+}
+
+function getPhaseLinkedSections(tasks: Task[], phaseId?: string, phaseTitle?: string): Task[] {
+  if (!phaseId && !phaseTitle) {
+    return [];
+  }
+
+  const candidates: Task[] = [];
+  if (phaseId) {
+    const parentLinked = getSectionsForPhase(tasks, phaseId);
+    candidates.push(...parentLinked);
+    candidates.push(...tasks.filter((task) => task.nodeType === "SECTION" && task.phaseTaskId === phaseId));
+  }
+
+  if (phaseTitle) {
+    const normalizedTitle = phaseTitle.trim().toLowerCase();
+    candidates.push(
+      ...tasks.filter(
+        (task) => task.nodeType === "SECTION" && task.phase.trim().toLowerCase() === normalizedTitle
+      )
+    );
+  }
+
+  return dedupeById(candidates);
+}
+
+function getPhaseLinkedLeafTasks(tasks: Task[], phaseId?: string, phaseTitle?: string): Task[] {
+  if (!phaseId && !phaseTitle) {
+    return [];
+  }
+
+  const candidates: Task[] = [];
+  if (phaseId) {
+    candidates.push(...getChildTasks(tasks, phaseId).filter((task) => task.nodeType === "TASK"));
+    candidates.push(
+      ...tasks.filter(
+        (task) => task.nodeType === "TASK" && task.phaseTaskId === phaseId && !task.sectionTaskId
+      )
+    );
+  }
+
+  if (phaseTitle) {
+    const normalizedTitle = phaseTitle.trim().toLowerCase();
+    candidates.push(
+      ...tasks.filter(
+        (task) =>
+          task.nodeType === "TASK" &&
+          !task.sectionTaskId &&
+          task.phase.trim().toLowerCase() === normalizedTitle
+      )
+    );
+  }
+
+  return dedupeById(candidates);
+}
+
+function collectHistoryCategorySignals(entry: HistoryEntry): string[] {
+  const signals: string[] = [];
+
+  const addSignal = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized) {
+      signals.push(normalized);
+    }
+  };
+
+  addSignal(entry.summary);
+  addSignal(entry.entityLabel);
+  addSignal(entry.moneyImpact?.label);
+  addSignal(entry.before?.category);
+  addSignal(entry.after?.category);
+
+  const beforeItems = Array.isArray(entry.before?.items) ? entry.before.items : [];
+  const afterItems = Array.isArray(entry.after?.items) ? entry.after.items : [];
+
+  for (const item of [...beforeItems, ...afterItems]) {
+    if (item && typeof item === "object" && "category" in item) {
+      addSignal((item as { category?: unknown }).category);
+    }
+  }
+
+  if (entry.metadata && typeof entry.metadata === "object") {
+    if ("category" in entry.metadata) {
+      addSignal((entry.metadata as Record<string, unknown>).category);
+    }
+
+    if ("categories" in entry.metadata) {
+      const categories = (entry.metadata as Record<string, unknown>).categories;
+      if (Array.isArray(categories)) {
+        categories.forEach(addSignal);
+      }
+    }
+  }
+
+  return signals;
+}
+
+function resolveMoneyFeedCategory(entry: HistoryEntry): MoneyFeedCategory {
+  const text = collectHistoryCategorySignals(entry).join(" ");
+
+  if (
+    text.includes("materials") ||
+    text.includes("cement") ||
+    text.includes("steel") ||
+    text.includes("sand") ||
+    text.includes("gravel") ||
+    text.includes("lumber")
+  ) {
+    return { tone: "materials", label: "Materials" };
+  }
+
+  if (
+    text.includes("labour") ||
+    text.includes("labor") ||
+    text.includes("subcontract") ||
+    text.includes("contractor") ||
+    text.includes("grouped payment") ||
+    text.includes("estimate-group-payment") ||
+    text.includes("service")
+  ) {
+    return { tone: "labour", label: "Labour" };
+  }
+
+  if (text.includes("equipment")) {
+    return { tone: "equipment", label: "Equipment" };
+  }
+
+  if (text.includes("land")) {
+    return { tone: "land", label: "Land" };
+  }
+
+  return { tone: "other", label: "Other" };
+}
+
+function getMoneyFeedEntryPriority(entry: HistoryEntry): number {
+  const category = resolveMoneyFeedCategory(entry);
+  const categoryWeight = category.tone === "other" ? 0 : 3;
+  const entityWeight =
+    entry.entityType === "EXPENSE"
+      ? 5
+      : entry.entityType === "INVOICE"
+        ? 4
+        : entry.entityType === "TASK"
+          ? 3
+          : entry.entityType === "ESTIMATE_GROUP"
+            ? 2
+            : 1;
+  const snapshotWeight =
+    typeof entry.before?.category === "string" || typeof entry.after?.category === "string" ? 2 : 0;
+
+  return categoryWeight + entityWeight + snapshotWeight;
+}
+
+function formatFeedTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
   const phaseNodes = useMemo(() => getPhaseNodes(tasks), [tasks]);
   const currentPhase = useMemo(() => getCurrentPhase(tasks), [tasks]);
   const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(null);
-  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
+  const [moneyFeedEntries, setMoneyFeedEntries] = useState<HistoryEntry[]>([]);
+  const [moneyFeedLoading, setMoneyFeedLoading] = useState(true);
   const selectedPhase = useMemo(
     () => phaseNodes.find((phase) => phase._id === selectedPhaseId),
     [phaseNodes, selectedPhaseId]
   );
-  const sectionNodes = useMemo(
-    () => getSectionsForPhase(tasks, selectedPhaseId ?? undefined),
-    [tasks, selectedPhaseId]
-  );
-  const selectedSection = useMemo(
-    () => sectionNodes.find((section) => section._id === selectedSectionId),
-    [sectionNodes, selectedSectionId]
-  );
-  const subsectionNodes = useMemo(
-    () => getChildTasks(tasks, selectedSectionId ?? undefined),
-    [tasks, selectedSectionId]
-  );
+  const sectionNodes = useMemo(() => {
+    if (!selectedPhaseId) {
+      return [];
+    }
+
+    const phaseTitle = phaseNodes.find((phase) => phase._id === selectedPhaseId)?.title;
+    const sections = getPhaseLinkedSections(tasks, selectedPhaseId, phaseTitle);
+    if (sections.length > 0) {
+      return sections;
+    }
+
+    // Backward-compatible fallback for phases with direct task children and no SECTION nodes.
+    return getPhaseLinkedLeafTasks(tasks, selectedPhaseId, phaseTitle);
+  }, [phaseNodes, tasks, selectedPhaseId]);
 
   useEffect(() => {
     if (selectedPhaseId && !phaseNodes.some((phase) => phase._id === selectedPhaseId)) {
       setSelectedPhaseId(null);
-      setSelectedSectionId(null);
-      return;
+    }
+  }, [phaseNodes, selectedPhaseId]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadMoneyFeed() {
+      setMoneyFeedLoading(true);
+      try {
+        const response = await api.getHistory({ moneyOnly: true, limit: 36 });
+        if (!ignore) {
+          setMoneyFeedEntries(response.entries);
+        }
+      } catch {
+        if (!ignore) {
+          setMoneyFeedEntries([]);
+        }
+      } finally {
+        if (!ignore) {
+          setMoneyFeedLoading(false);
+        }
+      }
     }
 
-    if (selectedSectionId && !sectionNodes.some((section) => section._id === selectedSectionId)) {
-      setSelectedSectionId(null);
-    }
-  }, [phaseNodes, sectionNodes, selectedPhaseId, selectedSectionId]);
+    void loadMoneyFeed();
+
+    return () => {
+      ignore = true;
+    };
+  }, [summary]);
 
   const summaryBreakdown = useMemo(() => {
     const radius = 86;
@@ -180,46 +374,79 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
     }));
   }, [summary]);
 
+  const moneyFeed = useMemo(() => {
+    const bestByOperation = new Map<string, HistoryEntry>();
+
+    for (const entry of moneyFeedEntries) {
+      const key = entry.operationId || entry._id;
+      const existing = bestByOperation.get(key);
+      if (!existing) {
+        bestByOperation.set(key, entry);
+        continue;
+      }
+
+      if (getMoneyFeedEntryPriority(entry) > getMoneyFeedEntryPriority(existing)) {
+        bestByOperation.set(key, entry);
+      }
+    }
+
+    return Array.from(bestByOperation.values())
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      .slice(0, 18)
+      .map((entry) => {
+      const category = resolveMoneyFeedCategory(entry);
+      return {
+        ...entry,
+        tone: category.tone,
+        categoryLabel: category.label,
+        color: summarySegmentColors[category.tone]
+      };
+    });
+  }, [moneyFeedEntries]);
+
   const phaseExpenseExplorer = useMemo(() => {
-    const sourceNodes = selectedSection ? subsectionNodes : selectedPhase ? sectionNodes : phaseNodes;
-    const levelLabel = selectedSection ? "Subsections" : selectedPhase ? "Sections" : "Phases";
-    const emptyMessage = selectedSection
-      ? "No subsections or tasks have been added under this section yet."
-      : selectedPhase
-        ? "No sections have been created for this phase yet."
-        : "Create phases in Project Tasks to start tracking phase costs.";
+    const sourceNodes = selectedPhase ? sectionNodes : phaseNodes;
+    const levelLabel = selectedPhase ? "Sections" : "Phases";
+    const emptyMessage = selectedPhase
+      ? "No sections have been created for this phase yet."
+      : "Create phases in Project Tasks to start tracking phase costs.";
 
     const baseRows = sourceNodes.map((node) => {
       const estimate = node.financials.rolledEstimate;
       const spent = node.financials.rolledSpent;
       const committed = node.financials.rolledCommitted;
-      const costToDate = spent + committed;
-      const displayCost = node.status === "PLANNED" ? estimate : costToDate;
-      const childCount = selectedSection
+      const isCurrent = node._id === currentPhase?._id;
+      const childCount = selectedPhase
         ? 0
-        : selectedPhase
-          ? getChildTasks(tasks, node._id).length
-          : getSectionsForPhase(tasks, node._id).length;
-      const clickable = childCount > 0 && !selectedSection && canDrillIntoNode(node.status);
+        : (() => {
+            const sections = getPhaseLinkedSections(tasks, node._id, node.title);
+            if (sections.length > 0) {
+              return sections.length;
+            }
+
+            return getPhaseLinkedLeafTasks(tasks, node._id, node.title).length;
+          })();
+      const clickable = !selectedPhase && childCount > 0;
+      const subtitle = selectedPhase
+        ? getTaskStatusLabel(node.status)
+        : `${childCount} section${childCount === 1 ? "" : "s"}`;
 
       return {
         _id: node._id,
         title: node.title,
+        subtitle,
         status: node.status,
         estimate,
         spent,
         committed,
-        displayCost,
         progress: node.progress.percentComplete,
-        isCurrent: node._id === currentPhase?._id,
-        clickable,
-        color: phaseExpenseColors[node.status],
-        childCount
+        isCurrent,
+        clickable
       };
     });
 
     const maxCost = Math.max(
-      ...baseRows.map((row) => Math.max(row.displayCost, row.estimate, row.spent + row.committed, 1)),
+      ...baseRows.map((row) => Math.max(row.estimate, row.spent, 1)),
       1
     );
 
@@ -228,44 +455,11 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
       emptyMessage,
       rows: baseRows.map((row) => ({
         ...row,
-        ratio: row.displayCost > 0 ? Math.max((row.displayCost / maxCost) * 100, 4) : 0,
-        totalLabel: row.status === "PLANNED" ? "Estimated" : "Cost to date"
+        estimateRatio: row.estimate > 0 ? Math.max((row.estimate / maxCost) * 100, 6) : 0,
+        spentRatio: row.spent > 0 ? Math.max((row.spent / maxCost) * 100, 6) : 0
       }))
     };
-  }, [currentPhase?._id, phaseNodes, sectionNodes, selectedPhase, selectedSection, subsectionNodes, tasks]);
-
-  const taskStatusRows = useMemo(() => {
-    if (!summary) {
-      return [];
-    }
-
-    const counts = new Map(summary.taskCounts.map((entry) => [entry._id, entry.count]));
-    const total = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
-
-    return (["PLANNED", "IN_PROGRESS", "BLOCKED", "DONE"] as TaskStatus[]).map((status) => ({
-      status,
-      count: counts.get(status) ?? 0,
-      share: total > 0 ? Number((((counts.get(status) ?? 0) / total) * 100).toFixed(1)) : 0,
-      color: taskStatusColors[status]
-    }));
-  }, [summary]);
-
-  const phaseRows = useMemo(() => {
-    return phaseNodes.slice(0, 5).map((phase) => ({
-      _id: phase._id,
-      title: phase.title,
-      isCurrent: phase._id === currentPhase?._id,
-      estimate: phase.financials.rolledEstimate,
-      spent: phase.financials.rolledSpent,
-      committed: phase.financials.rolledCommitted,
-      remaining: phase.financials.remaining,
-      progress: phase.progress.percentComplete,
-      ratio:
-        Math.max(phase.financials.rolledEstimate, 1) > 0
-          ? Math.min(100, ((phase.financials.rolledSpent + phase.financials.rolledCommitted) / Math.max(phase.financials.rolledEstimate, 1)) * 100)
-          : 0
-    }));
-  }, [currentPhase, phaseNodes]);
+  }, [currentPhase?._id, phaseNodes, sectionNodes, selectedPhase, tasks]);
 
   if (!summary) {
     return <section className="panel">Loading dashboard...</section>;
@@ -273,6 +467,42 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
 
   return (
     <section className="stack-lg budget-dashboard-sheet">
+      <div className="dashboard-news-layout">
+        <aside className="panel budget-card dashboard-news-card">
+          <div className="dashboard-news-head">
+            <div>
+              <h3>News Feed</h3>
+            </div>
+            <span className="dashboard-news-count">{moneyFeed.length}</span>
+          </div>
+          <div className="dashboard-news-list">
+            {moneyFeedLoading ? (
+              <p className="muted">Loading financial activity...</p>
+            ) : moneyFeed.length === 0 ? (
+              <p className="muted">No financial transactions yet.</p>
+            ) : (
+              moneyFeed.map((entry) => (
+                <article className={`dashboard-news-item tone-${entry.tone}`} key={entry._id}>
+                  <span className="dashboard-news-accent" style={{ background: entry.color }} />
+                  <div className="dashboard-news-copy">
+                    <div className="dashboard-news-meta-row">
+                      <span className={`dashboard-news-tag tone-${entry.tone}`}>{entry.categoryLabel}</span>
+                      <span>{formatFeedTime(entry.createdAt)}</span>
+                    </div>
+                    <strong title={entry.summary}>{entry.summary}</strong>
+                    {entry.moneyImpact && (
+                      <em style={{ color: entry.color }}>
+                        {entry.moneyImpact.label}: {formatCurrency(entry.moneyImpact.delta, entry.moneyImpact.currency)}
+                      </em>
+                    )}
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <div className="dashboard-news-main">
       <div className="budget-sheet-grid budget-sheet-grid-top">
         <article className="panel budget-card summary-ring-card">
           <h3>Summary This Build</h3>
@@ -344,13 +574,11 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
         <article className="panel budget-card phase-expense-card">
           <div className="phase-expense-head">
             <div>
-              <h3>{selectedSection ? "Section Expenses" : selectedPhase ? "Phase Sections" : "Phase Expenses"}</h3>
+              <h3>{selectedPhase ? "Phase Sections" : "Phase Expenses"}</h3>
               <p className="muted small-text">
-                {selectedSection
-                  ? "Task-level costs for this section."
-                  : selectedPhase
-                    ? "Section costs inside the selected phase. Planned sections show saved estimates."
-                    : "Completed and active phases open drilldowns. Planned phases show saved estimates until AI forecasting is added in Project Tasks."}
+                {selectedPhase
+                  ? "Section bars for the selected phase."
+                  : "Click any active phase bar to drill into its sections."}
               </p>
             </div>
             <div className="phase-expense-meta-stack">
@@ -359,92 +587,62 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
             </div>
           </div>
 
-          <div className="phase-expense-breadcrumbs">
-            <button
-              className={!selectedPhase ? "active" : ""}
-              type="button"
-              onClick={() => {
-                setSelectedPhaseId(null);
-                setSelectedSectionId(null);
-              }}
-            >
-              All Phases
-            </button>
-            {selectedPhase && (
+          {selectedPhase && (
+            <div className="phase-expense-breadcrumbs">
               <button
-                className={!selectedSection ? "active" : ""}
                 type="button"
-                onClick={() => setSelectedSectionId(null)}
+                onClick={() => setSelectedPhaseId(null)}
               >
-                {selectedPhase.title}
+                Back to Phases
               </button>
-            )}
-            {selectedSection && <span>{selectedSection.title}</span>}
-          </div>
+            </div>
+          )}
 
-          <div className="phase-expense-list">
+          <div key={selectedPhase?._id ?? "phases"} className="phase-expense-chart phase-expense-chart-animate">
+            <div className="phase-expense-legend">
+              <span><i className="phase-expense-legend-estimate" /> Estimate</span>
+              <span><i className="phase-expense-legend-spent" /> Spent</span>
+            </div>
             {phaseExpenseExplorer.rows.length === 0 ? (
               <p className="muted">{phaseExpenseExplorer.emptyMessage}</p>
             ) : (
-              phaseExpenseExplorer.rows.map((row) => {
-                const rowContent = (
-                  <>
-                    <div className="phase-expense-row-head">
-                      <div className="phase-expense-row-copy">
-                        <strong>{row.title}</strong>
-                        <span>
-                          {row.status === "PLANNED"
-                            ? "Estimate only"
-                            : row.clickable
-                              ? `Open ${selectedPhase ? "subsections" : "sections"}`
-                              : "No deeper items"}
-                        </span>
+              <div className="phase-expense-plot">
+                {phaseExpenseExplorer.rows.map((row) => {
+                  const groupContent = (
+                    <>
+                      <div className="phase-expense-bars" role="img" aria-label={`${row.title} estimate vs spent`}>
+                        <span className="phase-expense-bar-col phase-expense-bar-col-estimate" style={{ height: `${row.estimateRatio}%` }} />
+                        <span className="phase-expense-bar-col phase-expense-bar-col-spent" style={{ height: `${row.spentRatio}%` }} />
                       </div>
-                      <div className="phase-expense-row-side">
-                        <span className={`phase-expense-status is-${row.status.toLowerCase()}`}>{formatTaskStatusLabel(row.status)}</span>
-                        <strong>{formatCurrency(row.displayCost)}</strong>
-                        <span>{row.totalLabel}</span>
+                      <div className="phase-expense-group-label" title={row.title}>{row.title}</div>
+                      <div className="phase-expense-group-meta">
+                        <span>E {formatCurrency(row.estimate)}</span>
+                        <span>S {formatCurrency(row.spent)}</span>
                       </div>
-                    </div>
-                    <div className="phase-expense-bar">
-                      <span style={{ width: `${row.ratio}%`, background: row.color }} />
-                    </div>
-                    <div className="phase-expense-row-meta">
-                      <span>Estimate {formatCurrency(row.estimate)}</span>
-                      <span>Spent {formatCurrency(row.spent)}</span>
-                      <span>Committed {formatCurrency(row.committed)}</span>
-                      <span>Progress {row.progress}%</span>
-                    </div>
-                  </>
-                );
-
-                if (row.clickable) {
-                  return (
-                    <button
-                      className={`phase-expense-row is-clickable ${row.isCurrent ? "is-current" : ""}`}
-                      key={row._id}
-                      type="button"
-                      onClick={() => {
-                        if (selectedPhase) {
-                          setSelectedSectionId(row._id);
-                          return;
-                        }
-
-                        setSelectedPhaseId(row._id);
-                        setSelectedSectionId(null);
-                      }}
-                    >
-                      {rowContent}
-                    </button>
+                      <div className="phase-expense-group-sub">{row.subtitle}</div>
+                    </>
                   );
-                }
 
-                return (
-                  <div className={`phase-expense-row ${row.isCurrent ? "is-current" : ""} ${row.status === "PLANNED" ? "is-planned" : ""}`} key={row._id}>
-                    {rowContent}
-                  </div>
-                );
-              })
+                  if (row.clickable) {
+                    return (
+                      <button
+                        className={`phase-expense-group is-clickable ${row.isCurrent ? "is-current" : ""}`}
+                        key={row._id}
+                        type="button"
+                        onClick={() => setSelectedPhaseId(row._id)}
+                      >
+                        {groupContent}
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <div className={`phase-expense-group ${row.isCurrent ? "is-current" : ""} ${row.status === "PLANNED" ? "is-planned" : ""}`} key={row._id}>
+                      {groupContent}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         </article>
@@ -474,44 +672,8 @@ export function BudgetOverview({ summary, tasks }: BudgetOverviewProps) {
           </div>
         </article>
 
-        <article className="panel budget-card phase-snapshot-card">
-          <div className="card-title-row">
-            <h3>Phase Snapshot</h3>
-            <span className="muted small-text">{currentPhase?.title ?? "No active phase"}</span>
-          </div>
-          <div className="phase-snapshot-list">
-            {phaseRows.length === 0 ? (
-              <p className="muted">Create phases in Project Tasks to compare estimate, spend, and progress.</p>
-            ) : (
-              phaseRows.map((phase) => (
-                <div className={`phase-snapshot-row ${phase.isCurrent ? "is-current" : ""}`} key={phase._id}>
-                  <div className="phase-snapshot-head">
-                    <strong>{phase.title}</strong>
-                    <span>{phase.progress}%</span>
-                  </div>
-                  <div className="phase-snapshot-bar">
-                    <span style={{ width: `${Math.max(phase.ratio, phase.spent > 0 || phase.committed > 0 ? 4 : 0)}%` }} />
-                  </div>
-                  <div className="phase-snapshot-meta">
-                    <span>Estimate {formatCurrency(phase.estimate)}</span>
-                    <span>Spent {formatCurrency(phase.spent)}</span>
-                    <span>Committed {formatCurrency(phase.committed)}</span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="task-status-inline">
-            {taskStatusRows.map((row) => (
-              <div className="task-status-pill" key={row.status}>
-                <i style={{ background: row.color }} />
-                <span>{row.status.replace("_", " ")}</span>
-                <strong>{row.count}</strong>
-              </div>
-            ))}
-          </div>
-        </article>
+      </div>
+        </div>
       </div>
     </section>
   );
